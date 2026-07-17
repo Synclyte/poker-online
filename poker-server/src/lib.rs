@@ -2,7 +2,7 @@ use std::{cmp::Ordering::{self, Greater, Less}, fmt::{self, Debug}};
 use wasm_bindgen::prelude::*;
 use serde::{Serialize, Deserialize};
 use serde_json::{self};
-use rand::{RngExt, SeedableRng, rand_core::Rng,seq::{SliceRandom}};
+use rand::{RngExt, SeedableRng, seq::{SliceRandom}};
 use rand_chacha::ChaCha12Rng;
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Debug)]
@@ -424,6 +424,18 @@ enum PlayerType {
     Human,
     Computer(AI),
 }
+impl PlayerType {
+    fn from_str(player_type: &str) -> Option<Self> {
+        match player_type.to_lowercase().as_str() {
+            "human" => Some(PlayerType::Human),
+            "ai_risky" => Some(PlayerType::Computer(AI::new(AIType::Risky))),
+            "ai_safe" => Some(PlayerType::Computer(AI::new(AIType::Safe))),
+            "ai_smart" => Some(PlayerType::Computer(AI::new(AIType::Smart))),
+            "ai_random" => Some(PlayerType::Computer(AI::new(AIType::Random))),
+            _ => None
+        }
+    }
+}
 
 #[derive(Clone, Debug, Copy)]
 struct AI {
@@ -647,8 +659,8 @@ impl fmt::Display for Action {
             Action::Raise(n) => write!(f, "RAISE {n}"),
             Action::Fold => write!(f, "FOLD"),
             Action::Call => write!(f, "CALL"),
-            Action::Timeout => write!(f, "TIME_OUT"),
-            Action::EndMove => write!(f, "END_MOVE"),
+            Action::Timeout => write!(f, "TIMEOUT"),
+            Action::EndMove => write!(f, "ENDMOVE"),
         }
     }
 }
@@ -703,13 +715,24 @@ struct GameContext {
     min_raise: i32,
     starting_chips: i32,
     deck_type: String,
+    max_players: usize,
+    id: usize,
 }
 impl GameContext {
-    fn new(hand_size: usize, rng: ChaCha12Rng, mut permitted_hands: Vec<HandType>, blind_size: i32, min_raise:i32, starting_chips: i32, deck_type: String) -> Self {
+    fn new(
+        hand_size: usize, 
+        rng: ChaCha12Rng, 
+        mut permitted_hands: Vec<HandType>, 
+        blind_size: i32, 
+        min_raise:i32, 
+        starting_chips: i32, 
+        deck_type: String, 
+        max_players: usize
+    ) -> Self {
         permitted_hands.sort_by(|a, b| b.cmp(a));
         let hand_fns: Vec<fn(&Vec<ExpandedCard>, usize) -> Option<Hand>> = permitted_hands.iter().map(|h| HandType::get_check_fn(*h)).collect();
 
-        GameContext { hand_size, rng, hand_fns, blind_size, min_raise, starting_chips, deck_type }
+        GameContext { hand_size, rng, hand_fns, blind_size, min_raise, starting_chips, deck_type, max_players, id: 0 }
     }
 }
 
@@ -722,6 +745,7 @@ pub struct GameConfig {
     pub min_raise: i32,
     pub starting_chips: i32,
     pub deck_type: String,
+    pub max_players: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -791,18 +815,17 @@ impl Game {
             .map_err(|e| format!("Failed to parse given config: {}", e))?;
 
         let total_players = config.player_count + config.bots.len();
-        let ctx = GameContext::new(5, ChaCha12Rng::seed_from_u64(config.rng_seed), HAND_TYPES.to_vec(), config.blind_size, config.min_raise, config.starting_chips, config.deck_type);
+        let mut ctx = GameContext::new(5, ChaCha12Rng::seed_from_u64(config.rng_seed), HAND_TYPES.to_vec(), config.blind_size, config.min_raise, config.starting_chips, config.deck_type, config.max_players);
         let deck = get_custom_deck(&ctx.deck_type);
 
-        let mut id = 0;
         let mut players: Vec<Player> = Vec::with_capacity(total_players);
         for _ in 0..config.player_count {
-            players.push(Player::new(PlayerType::Human, id));
-            id += 1;
+            players.push(Player::new(PlayerType::Human, ctx.id));
+            ctx.id += 1;
         }
         for bot_type in config.bots {
-            players.push(Player::new(PlayerType::Computer(AI::from_str(&bot_type)), id));
-            id += 1;
+            players.push(Player::new(PlayerType::Computer(AI::from_str(&bot_type)), ctx.id));
+            ctx.id += 1;
         }
 
         Ok(Game { 
@@ -817,6 +840,30 @@ impl Game {
             deck, 
             community: Vec::new() 
         })
+    }
+
+    /**
+     * Adds a player to the current game, given the round has not started and there is space
+     * Returns a json string containing an error or the id of the newly added player
+     */
+    #[wasm_bindgen]
+    pub fn try_add_player(&mut self, player_type: String) -> String {
+        if self.players.len() >= self.ctx.max_players {
+            return serde_json::json!({"error": "Room already at max capacity"}).to_string();
+        } else if self.round >= Round::Preflop {
+            return serde_json::json!({"error": "Game already started"}).to_string();
+        }
+
+        if let Some(p_type) = PlayerType::from_str(&player_type) {
+            let mut new_player = Player::new(p_type, self.ctx.id);
+            new_player.chips = self.ctx.starting_chips;
+            self.players.push(new_player);
+            self.ctx.id += 1;
+            
+            serde_json::json!({"id": &self.ctx.id - 1}).to_string()
+        } else {
+            serde_json::json!({"error": "Specified player type is invalid"}).to_string()
+        }
     }
 
     #[wasm_bindgen]
@@ -851,13 +898,12 @@ impl Game {
     /**
      * Transitions the current game from the round intermission to the game
      */
-    pub fn start(&mut self) -> Vec<String> {
+    pub fn start(&mut self) -> String {
         if self.round == Round::Preround {
             self.update_round();
-            return (0..self.players.len()).map(|i| self.get_game_state(i)).collect();
+            return self.get_game_state(usize::MAX);
         }
-        let err_str = serde_json::json!({"error": "Invalid state for starting game"}).to_string();
-        vec![err_str]
+        serde_json::json!({"error": "Invalid state for starting game"}).to_string()
     }
 
     #[wasm_bindgen]
@@ -1178,18 +1224,31 @@ impl Game {
                         }
                     }
                 }
-
-                for index in (0..self.players.len()).rev() {
-                    if self.players[index].remove {
-                        self.players.remove(index);
-                    }
-                }
-
-                self.games_played += 1;
-                self.players.rotate_left(1);
-                self.round = Round::Preround;
+                self.end_round();
             }
         }
+    }
+
+    fn end_round(&mut self) {
+        for index in (0..self.players.len()).rev() {
+            if self.players[index].remove {
+                self.players.remove(index);
+            }
+        }
+
+        self.games_played += 1;
+        self.players.rotate_left(1);
+        self.round = Round::Preround;
+    }
+
+    #[wasm_bindgen]
+    pub fn get_human_players(&self) -> i32 {
+        let mut humans = 0;
+        self.players.iter().for_each(|p| match p.player_type {
+            PlayerType::Human => humans += 1,
+            PlayerType::Computer(_) => {},
+        });
+        humans
     }
 
     #[wasm_bindgen]
@@ -1224,6 +1283,15 @@ impl Game {
         let result = MoveResult { events: event_log, game_state: state_value };
 
         serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    #[wasm_bindgen]
+    pub fn get_current_turn_player(&self) -> i32 {
+        if let Ok(i) = self.get_player_index(self.turn_index) {
+            return i as i32;
+        } else {
+            panic!()
+        }
     }
 
     /**
