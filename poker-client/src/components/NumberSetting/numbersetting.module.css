@@ -1,0 +1,25 @@
+.capacityValue::-webkit-outer-spin-button,
+.capacityValue::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.capacityValue {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.capacityBtn {
+    background: transparent;
+    border: none;
+    font-family: 'Jersey 10', sans-serif;
+    cursor: pointer;
+    transition: transform 0.1s, color 0.1s;
+}
+
+.capacityBtn:hover {
+    transform: scale(1.2);
+}
+
+.capacityBtn:active {
+    transform: scale(0.9);
+}

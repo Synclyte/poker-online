@@ -1,0 +1,29 @@
+.wrapper {
+    position: relative;
+    width: 100%;
+    height: fit-content;
+    clip-path: polygon(0px calc(100% - 8px), 2px calc(100% - 8px), 2px calc(100% - 4px), 4px calc(100% - 4px), 4px calc(100% - 2px), 8px calc(100% - 2px), 8px 100%, calc(100% - 8px) 100%, calc(100% - 8px) calc(100% - 2px), calc(100% - 4px) calc(100% - 2px), calc(100% - 4px) calc(100% - 4px), calc(100% - 2px) calc(100% - 4px), calc(100% - 2px) calc(100% - 8px), 100% calc(100% - 8px), 100% 8px, calc(100% - 2px) 8px, calc(100% - 2px) 4px, calc(100% - 4px) 4px, calc(100% - 4px) 2px, calc(100% - 8px) 2px, calc(100% - 8px) 0px, 8px 0px, 8px 2px, 4px 2px, 4px 4px, 2px 4px, 2px 8px, 0px 8px);
+}
+
+.wrapper::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--pixel-border-color);
+    display: block;
+    pointer-events: none;
+    clip-path: polygon(0px calc(100% - 8px), 2px calc(100% - 8px), 2px calc(100% - 4px), 4px calc(100% - 4px), 4px calc(100% - 2px), 8px calc(100% - 2px), 8px 100%, calc(100% - 8px) 100%, calc(100% - 8px) calc(100% - 2px), calc(100% - 4px) calc(100% - 2px), calc(100% - 4px) calc(100% - 4px), calc(100% - 2px) calc(100% - 4px), calc(100% - 2px) calc(100% - 8px), 100% calc(100% - 8px), 100% 8px, calc(100% - 2px) 8px, calc(100% - 2px) 4px, calc(100% - 4px) 4px, calc(100% - 4px) 2px, calc(100% - 8px) 2px, calc(100% - 8px) 0px, 8px 0px, 8px 2px, 4px 2px, 4px 4px, 2px 4px, 2px 8px, 0px 8px, 0px 50%, 4px 50%, 4px 10px, 6px 10px, 6px 6px, 10px 6px, 10px 4px, calc(100% - 10px) 4px, calc(100% - 10px) 6px, calc(100% - 6px) 6px, calc(100% - 6px) 10px, calc(100% - 4px) 10px, calc(100% - 4px) calc(100% - 10px), calc(100% - 6px) calc(100% - 10px), calc(100% - 6px) calc(100% - 6px), calc(100% - 10px) calc(100% - 6px), calc(100% - 10px) calc(100% - 4px), 10px calc(100% - 4px), 10px calc(100% - 6px), 6px calc(100% - 6px), 6px calc(100% - 10px), 4px calc(100% - 10px), 4px 50%, 0px 50%);
+}
+
+.inner {
+    position: relative;
+    border: 4px solid transparent; 
+    background-color: var(--pixel-bg);
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    clip-path: polygon(4px 10px, 6px 10px, 6px 6px, 10px 6px, 10px 4px, calc(100% - 10px) 4px, calc(100% - 10px) 6px, calc(100% - 6px) 6px, calc(100% - 6px) 10px, calc(100% - 4px) 10px, calc(100% - 4px) calc(100% - 10px), calc(100% - 6px) calc(100% - 10px), calc(100% - 6px) calc(100% - 6px), calc(100% - 10px) calc(100% - 6px), calc(100% - 10px) calc(100% - 4px), 10px calc(100% - 4px), 10px calc(100% - 6px), 6px calc(100% - 6px), 6px calc(100% - 10px), 4px calc(100% - 10px));
+}

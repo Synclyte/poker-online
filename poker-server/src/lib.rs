@@ -696,13 +696,13 @@ enum Round {
 impl fmt::Display for Round {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Round::Room => write!(f, "Not Started"),
-            Round::Preround => write!(f, "Pre-Round"),
-            Round::Preflop => write!(f, "Pre-Flop"),
-            Round::Flop => write!(f, "Flop"),
-            Round::Turn => write!(f, "Turn"),
-            Round::River => write!(f, "River"),
-            Round::Showdown => write!(f, "Showdown"),
+            Round::Room => write!(f, "room"),
+            Round::Preround => write!(f, "preround"),
+            Round::Preflop => write!(f, "preflop"),
+            Round::Flop => write!(f, "flop"),
+            Round::Turn => write!(f, "turn"),
+            Round::River => write!(f, "river"),
+            Round::Showdown => write!(f, "showdown"),
         }
     }
 }
@@ -810,15 +810,37 @@ impl Game {
     /**
      * Creates a game, given a valid JSON config string. Config is expected to be formed as a valid GameConfig struct
      */
-    pub fn new(config_json: &str) -> Result<Game, String> {
-        let config: GameConfig = serde_json::from_str(config_json)
-            .map_err(|e| format!("Failed to parse given config: {}", e))?;
+    pub fn new() -> Game {
+        let ctx = GameContext::new(5, ChaCha12Rng::seed_from_u64(0), HAND_TYPES.to_vec(), 0, 0, 0, "standard".to_string(), 0);
+        let deck = get_custom_deck("standard");
 
-        let total_players = config.player_count + config.bots.len();
+        Game { 
+            ctx, 
+            round: Round::Room, 
+            games_played: 0,
+            players: Vec::new(), 
+            turn_index: 0,
+            bet: 0,
+            round_pool: 0,
+            pots: Vec::new(),
+            deck, 
+            community: Vec::new() 
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn update_config(&mut self, config_json: &str) -> String {
+        if self.round > Round::Preround { return serde_json::json!({"error": "Failed to apply given config - round has already started"}).to_string(); }
+
+        let str_config: Result<GameConfig, serde_json::Error> = serde_json::from_str(config_json);
+        if str_config.is_err() {
+            return serde_json::json!({"error": "Failed to parse given config"}).to_string();
+        }
+        let config: GameConfig = serde_json::from_str(config_json).unwrap();
         let mut ctx = GameContext::new(5, ChaCha12Rng::seed_from_u64(config.rng_seed), HAND_TYPES.to_vec(), config.blind_size, config.min_raise, config.starting_chips, config.deck_type, config.max_players);
         let deck = get_custom_deck(&ctx.deck_type);
 
-        let mut players: Vec<Player> = Vec::with_capacity(total_players);
+        let mut players: Vec<Player> = Vec::with_capacity(config.player_count + config.bots.len());
         for _ in 0..config.player_count {
             players.push(Player::new(PlayerType::Human, ctx.id));
             ctx.id += 1;
@@ -827,19 +849,11 @@ impl Game {
             players.push(Player::new(PlayerType::Computer(AI::from_str(&bot_type)), ctx.id));
             ctx.id += 1;
         }
+    
+        self.ctx = ctx;
+        self.deck = deck;
 
-        Ok(Game { 
-            ctx, 
-            round: Round::Preround, 
-            games_played: 0,
-            players, 
-            turn_index: 0,
-            bet: 0,
-            round_pool: 0,
-            pots: Vec::new(),
-            deck, 
-            community: Vec::new() 
-        })
+        "".to_string()
     }
 
     /**
@@ -1242,13 +1256,20 @@ impl Game {
     }
 
     #[wasm_bindgen]
-    pub fn get_human_players(&self) -> i32 {
+    pub fn get_player_info(&self) -> String {
         let mut humans = 0;
+        let mut bots = 0;
         self.players.iter().for_each(|p| match p.player_type {
             PlayerType::Human => humans += 1,
-            PlayerType::Computer(_) => {},
+            PlayerType::Computer(_) => bots += 1,
         });
-        humans
+
+        serde_json::json!({"humans": humans, "bots": bots}).to_string()
+    }
+
+    #[wasm_bindgen]
+    pub fn get_round(&self) -> String {
+        return self.round.to_string();
     }
 
     #[wasm_bindgen]
@@ -1289,9 +1310,8 @@ impl Game {
     pub fn get_current_turn_player(&self) -> i32 {
         if let Ok(i) = self.get_player_index(self.turn_index) {
             return i as i32;
-        } else {
-            panic!()
         }
+        0
     }
 
     /**
