@@ -1,3 +1,7 @@
+:root {
+    --input-focus-colour: #fca311;
+}
+
 .capacityValue::-webkit-outer-spin-button,
 .capacityValue::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -12,6 +16,7 @@
     background: transparent;
     border: none;
     font-family: 'Jersey 10', sans-serif;
+    color: var(--input-focus-colour);
     cursor: pointer;
     transition: transform 0.1s, color 0.1s;
 }

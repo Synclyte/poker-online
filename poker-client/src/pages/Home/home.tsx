@@ -230,7 +230,7 @@ export function Home() {
                                             </button>
                                         </div>
                                     )) : (
-                                        <div className={styles.emptyState}> public lobbies found</div>
+                                        <div className={styles.emptyState}>No public lobbies found</div>
                                     )}
                                 </PixelBox>
                             </div>

@@ -14,9 +14,7 @@ export default function App() {
         <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/lobby/:roomId" element={<Lobby />} />
-            {/*
             <Route path="/game/:roomId" element={<Game />} />
-            */}
         </Routes>
         </Router>
         </SocketProvider>

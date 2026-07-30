@@ -4,6 +4,7 @@ use serde::{Serialize, Deserialize};
 use serde_json::{self};
 use rand::{RngExt, SeedableRng, seq::{SliceRandom}};
 use rand_chacha::ChaCha12Rng;
+use console_error_panic_hook;
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Debug)]
 #[repr(u8)]
@@ -25,19 +26,19 @@ enum Rank {
 impl std::fmt::Display for Rank {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Rank::Two => write!(f, "Two"),
-            Rank::Three => write!(f, "Three"),
-            Rank::Four => write!(f, "Four"),
-            Rank::Five => write!(f, "Five"), 
-            Rank::Six => write!(f, "Six"), 
-            Rank::Seven => write!(f, "Seven"), 
-            Rank::Eight => write!(f, "Eight"), 
-            Rank::Nine => write!(f, "Nine"), 
-            Rank::Ten => write!(f, "Ten"), 
-            Rank::Jack => write!(f, "Jack"), 
-            Rank::Queen => write!(f, "Queen"), 
-            Rank::King => write!(f, "King"), 
-            Rank::Ace => write!(f, "Ace"), 
+            Rank::Two => write!(f, "2"),
+            Rank::Three => write!(f, "3"),
+            Rank::Four => write!(f, "4"),
+            Rank::Five => write!(f, "5"), 
+            Rank::Six => write!(f, "6"), 
+            Rank::Seven => write!(f, "7"), 
+            Rank::Eight => write!(f, "8"), 
+            Rank::Nine => write!(f, "9"), 
+            Rank::Ten => write!(f, "10"), 
+            Rank::Jack => write!(f, "j"), 
+            Rank::Queen => write!(f, "q"), 
+            Rank::King => write!(f, "k"), 
+            Rank::Ace => write!(f, "a"), 
         }
     }
 }
@@ -77,8 +78,8 @@ impl Rank {
             "9" => Rank::Nine,
             "10" => Rank::Ten,
             "j" => Rank::Jack,
-            "k" => Rank::Queen,
-            "q" => Rank::King,
+            "q" => Rank::Queen,
+            "k" => Rank::King,
             "a" => Rank::Ace,
             _ => unreachable!()
         }
@@ -86,7 +87,7 @@ impl Rank {
 }
 static RANKS: [Rank; 13] = [Rank::Two, Rank::Three, Rank::Four, Rank::Five, Rank::Six, Rank::Seven, Rank::Eight, Rank::Nine, Rank::Ten, Rank::Jack, Rank::Queen, Rank::King, Rank::Ace];
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Suit {
     Spades,
     Diamonds,
@@ -96,12 +97,22 @@ enum Suit {
 impl std::fmt::Display for Suit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Suit::Spades => write!(f, "s"),
+            Suit::Clubs => write!(f, "c"),
+            Suit::Hearts => write!(f, "h"),
+            Suit::Diamonds => write!(f, "d")
+        }
+    }
+}
+impl std::fmt::Debug for Suit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Suit::Spades => write!(f, "Spades"),
             Suit::Clubs => write!(f, "Clubs"),
             Suit::Hearts => write!(f, "Hearts"),
             Suit::Diamonds => write!(f, "Diamonds")
         }
-    }
+    }    
 }
 impl Suit {
     pub fn from(suit: &str) -> Suit {
@@ -131,8 +142,8 @@ enum ExpandedCard {
 impl std::fmt::Display for ExpandedCard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ExpandedCard::Joker(c) => write!(f, "Joker ({})", ExpandedCard::PlayingCard(*c).to_string()),
-            ExpandedCard::PlayingCard(c) => write!(f, "{} of {}", c.rank, c.suit),
+            ExpandedCard::Joker(c) => write!(f, "*{}:{}", c.rank, c.suit),
+            ExpandedCard::PlayingCard(c) => write!(f, "{}:{}", c.rank, c.suit),
             ExpandedCard::Unmarked => write!(f, "Unmarked")
         }
     }
@@ -290,7 +301,9 @@ impl HandType {
             HandType::TwoPair => |cards, hand_size| build_hand(get_representation(cards, vec![2, 2], None, hand_size), HandType::TwoPair),
             HandType::Pair => |cards, hand_size| build_hand(get_representation(cards, vec![2], None, hand_size), HandType::Pair),
             HandType::HighCard => |cards, hand_size| build_hand(get_representation(cards, vec![1], None, hand_size), HandType::HighCard),
-            HandType::None => |cards, hand_size| Some(Hand { hand_type: HandType::None, cards: vec![], spare: cards[..hand_size].to_vec() }),
+            HandType::None => |cards, hand_size|
+                Some(Hand { hand_type: HandType::None, cards: vec![], spare: cards[..hand_size.min(cards.len())].to_vec()
+            }),
         } 
     }
 }
@@ -364,6 +377,7 @@ impl HandContext<'_> {
                 extra_cards.push(self.cards[next_index]);
             }
         }
+        extra_cards.sort_by(|a ,b| b.cmp(a));
         
         Some((hand_cards, extra_cards))
     }
@@ -389,7 +403,7 @@ impl Hand {
                 return hand;
             }
         }
-        unreachable!()
+        Hand { hand_type: HandType::None, cards: vec![], spare: cards.clone() }
     }
 
     fn compare(&self, other: &Self) -> Ordering {
@@ -475,49 +489,57 @@ impl AI {
 
         let player = &game.players[player_index].clone();
 
-        let fear_greed_ratio = self.fear / (self.fear + self.greed);
+        let fear_greed_sum = self.fear + self.greed;
+        let fear_greed_ratio = if fear_greed_sum > 0.0 { self.fear / fear_greed_sum } else { 0.5 };
         let hand_cards: Vec<ExpandedCard> = [&player.cards[..], &game.community[..]].concat();
-        let hand_strength = self.calculate_hand_value(&hand_cards, game);
+        let hand_strength = self.calculate_hand_value(&hand_cards, game).clamp(0.0, 1.0);
 
-        // if the game bet is greater than their own bet:
-        if game.bet > player.bet {
-            let new_total = self.total_bet + game.bet - player.bet;
+        if self.budget <= 0 {
+            self.budget = self.calculate_round_budget(player, game, hand_strength);
+        }
+
+        if game.bet > player.total_bet {
+            let new_total = self.total_bet + game.bet - player.total_bet;
             if new_total > self.budget {
-                let calibration = (game.ctx.blind_size * 3) as f64;
-                let raise_ratio = (new_total as f64 + calibration) / (self.budget as f64 + calibration);
+                let calibration = (game.ctx.blind_size.max(1) * 3) as f64;
+                let denominator = (self.budget as f64 + calibration).max(1.0);
+                let raise_ratio = (new_total as f64 + calibration) / denominator;
 
-                let p_fold = (fear_greed_ratio * raise_ratio - hand_strength * 2.0).clamp((self.randomness - hand_strength).max(0.0), 1.0 - hand_strength);
-                let p_call = (fear_greed_ratio - hand_strength).max(self.randomness);
+                let raw_fold = fear_greed_ratio * raise_ratio - hand_strength * 2.0;
+                let min_fold = (self.randomness - hand_strength).max(0.0);
+                let max_fold = (1.0 - hand_strength).max(min_fold);
+                let p_fold = if raw_fold.is_nan() { 0.5 } else { raw_fold.clamp(min_fold, max_fold) };
+
+                let p_call = if (fear_greed_ratio - hand_strength).is_nan() { 0.5 } else { (fear_greed_ratio - hand_strength).max(self.randomness).clamp(0.0, 1.0) };
 
                 if game.ctx.rng.random_bool(p_fold) {
                     return Action::Fold;
                 } else if game.ctx.rng.random_bool(p_call) {
-                    self.total_bet += game.bet - player.bet;
+                    self.total_bet += (game.bet - player.total_bet).min(player.chips);
                     self.budget = self.calculate_round_budget(player, game, hand_strength);
                     return Action::Call;
                 } else {
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.1 * self.greed * player.chips as f64) as i32;
                     let adjusted_raise = raise_amount.min(player.chips);
-                    self.total_bet += adjusted_raise + game.bet - player.bet;
-                    self.budget = self.calculate_round_budget(player, game, hand_strength).clamp(self.budget + raise_amount, player.chips);
+                    self.total_bet += adjusted_raise + (game.bet - player.total_bet).min(player.chips);
+                    let upper_budget = player.chips.max(1);
+                    self.budget = self.calculate_round_budget(player, game, hand_strength).clamp((self.budget + raise_amount).min(upper_budget), upper_budget);
                     return Action::Raise(adjusted_raise);
                 }
             } else {
                 return Action::Call;
             }
-        // if the game bet is the same as their bet:
         } else {
-            let budget_used = self.total_bet / self.budget;
-            let p_raise = (fear_greed_ratio * hand_strength * 2.0 * (1 - budget_used) as f64).max(1.0);
-            if game.ctx.rng.random_bool(p_raise) {
+            let budget_used = if self.budget > 0 { (self.total_bet as f64 / self.budget as f64).clamp(0.0, 1.0) } else { 0.0 };
+            let p_raise = (fear_greed_ratio * hand_strength * 2.0 * (1.0 - budget_used)).clamp(0.0, 1.0);
+
+            if !p_raise.is_nan() && game.ctx.rng.random_bool(p_raise) {
                 let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
                 let adjusted_raise = raise_amount.min(self.budget - self.total_bet).min(player.chips);
                 return Action::Raise(adjusted_raise);
-            } else if game.ctx.rng.random_bool(1.0 - (self.randomness / 4.0 - hand_strength).clamp(0.0, 1.0)) {
-                return Action::Call;
-            } else {
-                return Action::Fold;
-            }
+            } 
+
+            Action::Call
         }
     }
 
@@ -525,7 +547,7 @@ impl AI {
         if game.round <= Round::Preflop {
             // by default, will stake at most 1/10 of chips + blind size on preflop
             let base_bet: f64 = player.chips as f64 / 10.0 * self.greed;
-            let mut base_bet_blind: i32 = (base_bet as i32 + game.ctx.blind_size).max(player.chips);
+            let mut base_bet_blind: i32 = (base_bet as i32 + game.ctx.blind_size).min(player.chips);
 
             // but can randomly commit everything or far less than usual
             if game.ctx.rng.random_bool(self.randomness) {
@@ -542,7 +564,8 @@ impl AI {
         }
 
         // % of chips already committed - used to ensure AI does not fold after committing 90% of its chips
-        let sunk_cost: f64 = self.total_bet as f64 / (self.total_bet + player.chips) as f64;
+        let total_committed = self.total_bet + player.chips;
+        let sunk_cost: f64 = if total_committed > 0 { self.total_bet as f64 / (total_committed) as f64 } else { 0.0 };
 
         // budget calculation - considers three main factors:
         //  - base allowance (calibrated from blind size)
@@ -631,18 +654,18 @@ impl fmt::Display for SpecialCard {
 struct Player {
     player_type: PlayerType,
     chips: i32,
-    bet: i32,
+    total_bet: i32,
+    round_bet: i32,
     cards: Vec<ExpandedCard>,
     special_cards: Vec<SpecialCard>,
     id: usize,
     acted: bool,
     folded: bool,
-    forced_bet: i32,
     remove: bool,
 }
 impl Player {
     fn new(player_type: PlayerType, id: usize) -> Self {
-        Player { player_type, chips: 0, bet: 0, cards: Vec::new(), special_cards: Vec::new(), id, acted: false, folded: false, forced_bet: 0, remove: false }
+        Player { player_type, chips: 0, total_bet: 0, round_bet: 0, cards: Vec::new(), special_cards: Vec::new(), id, acted: false, folded: false, remove: false }
     }
 }
 
@@ -761,23 +784,28 @@ pub struct Game {
     games_played: i32,
     players: Vec<Player>,
     turn_index: usize,
+    dealer_index: usize,
     bet: i32,
     round_pool: i32,
     pots: Vec<Pot>,
     deck: Vec<ExpandedCard>,
     community: Vec<ExpandedCard>,
+    winning_hand_type: String,
 }
 
 #[derive(Serialize)]
 pub struct PlayerState {
     pub id: usize,
     pub chips: i32,
+    pub total_bet: i32,
     pub round_bet: i32,
     pub folded: bool,
     pub acted: bool,
     pub is_turn: bool,
+    pub is_dealer: bool,
     pub hole_cards: Vec<String>,
     pub special_cards: Vec<String>,
+    pub hand_type: String,
 }
 
 #[derive(Serialize)]
@@ -789,6 +817,7 @@ pub struct GameState {
     pub overall_sum: i32,
     pub highest_bet: i32,
     pub deck_cards: usize,
+    pub winning_hand_type: String,
     pub players: Vec<PlayerState>,
 }
 
@@ -820,24 +849,46 @@ impl Game {
             games_played: 0,
             players: Vec::new(), 
             turn_index: 0,
+            dealer_index: 0,
             bet: 0,
             round_pool: 0,
             pots: Vec::new(),
             deck, 
-            community: Vec::new() 
+            community: Vec::new(),
+            winning_hand_type: String::new(),
         }
     }
 
     #[wasm_bindgen]
+    pub fn init_panic_hook(&self) {
+        console_error_panic_hook::set_once();
+    }
+
+    #[wasm_bindgen]
+    /**
+     * Updates the current game config with a newly provided one
+     * Returns a JSON string containing an error if not possible
+     */
     pub fn update_config(&mut self, config_json: &str) -> String {
-        if self.round > Round::Preround { return serde_json::json!({"error": "Failed to apply given config - round has already started"}).to_string(); }
+        if self.round > Round::Preround { 
+            return serde_json::json!({"error": "Failed to apply given config - round has already started"}).to_string(); 
+        }
 
         let str_config: Result<GameConfig, serde_json::Error> = serde_json::from_str(config_json);
         if str_config.is_err() {
             return serde_json::json!({"error": "Failed to parse given config"}).to_string();
         }
-        let config: GameConfig = serde_json::from_str(config_json).unwrap();
-        let mut ctx = GameContext::new(5, ChaCha12Rng::seed_from_u64(config.rng_seed), HAND_TYPES.to_vec(), config.blind_size, config.min_raise, config.starting_chips, config.deck_type, config.max_players);
+        let config: GameConfig = str_config.unwrap();
+        let mut ctx = GameContext::new(
+            5, 
+            ChaCha12Rng::seed_from_u64(config.rng_seed), 
+            HAND_TYPES.to_vec(), 
+            config.blind_size, 
+            config.min_raise, 
+            config.starting_chips, 
+            config.deck_type, 
+            config.max_players
+        );
         let deck = get_custom_deck(&ctx.deck_type);
 
         let mut players: Vec<Player> = Vec::with_capacity(config.player_count + config.bots.len());
@@ -852,15 +903,16 @@ impl Game {
     
         self.ctx = ctx;
         self.deck = deck;
+        self.players = players;
 
         "".to_string()
     }
 
-    /**
-     * Adds a player to the current game, given the round has not started and there is space
-     * Returns a json string containing an error or the id of the newly added player
-     */
     #[wasm_bindgen]
+    /**
+     * Attempts to add a player to the room
+     * Returns a JSON string containing either the ID of the new player or an error
+     */
     pub fn try_add_player(&mut self, player_type: String) -> String {
         if self.players.len() >= self.ctx.max_players {
             return serde_json::json!({"error": "Room already at max capacity"}).to_string();
@@ -874,7 +926,7 @@ impl Game {
             self.players.push(new_player);
             self.ctx.id += 1;
             
-            serde_json::json!({"id": &self.ctx.id - 1}).to_string()
+            serde_json::json!({"id": self.ctx.id - 1}).to_string()
         } else {
             serde_json::json!({"error": "Specified player type is invalid"}).to_string()
         }
@@ -882,16 +934,16 @@ impl Game {
 
     #[wasm_bindgen]
     /**
-     * Transitions the game from the room to the preround, through resetting relevant game data
+     * Resets all player and game related data, progressing the round from Room to Preround
      */
     pub fn initialise(&mut self) -> String {
         if self.round != Round::Room {
-            return serde_json::json!({"error": "Could not initialise game from current game round"}).to_string();
+            return serde_json::json!({"error": "Could not initialise game from current round"}).to_string();
         }
 
+        let start_chips = if self.ctx.starting_chips > 0 { self.ctx.starting_chips } else { 1000 };
         self.players.iter_mut().for_each(|p| {
-            p.chips = self.ctx.starting_chips;
-            p.bet = 0;
+            p.chips = start_chips;
             p.folded = false;
             p.acted = false;
             p.cards = Vec::new();
@@ -904,48 +956,72 @@ impl Game {
         self.round = Round::Preround;
         self.pots = Vec::new();
         self.round_pool = 0;
+        self.winning_hand_type.clear();
+        self.dealer_index = 0;
 
-        self.get_game_state(usize::MAX).to_string()
+        self.get_game_state(usize::MAX)
     }
 
     #[wasm_bindgen]
     /**
-     * Transitions the current game from the round intermission to the game
+     * Progresses the round from the intermission to the Preflop
      */
     pub fn start(&mut self) -> String {
         if self.round == Round::Preround {
-            self.update_round();
+            self.start_new_hand();
+        } else if self.round == Round::Showdown {
+            self.end_hand();
+            self.start_new_hand();
+        } else {
+            return serde_json::json!({"error": "Invalid state for starting game"}).to_string();
+        }
+
+        if self.round == Round::Room {
             return self.get_game_state(usize::MAX);
         }
-        serde_json::json!({"error": "Invalid state for starting game"}).to_string()
+
+        let mut events = Vec::new();
+        self.advance_game_loop(&mut events);
+
+        self.get_game_state(usize::MAX)
     }
 
     #[wasm_bindgen]
     /**
-     * Takes a move from a given player, and executes it after confirming move validity
+     * Public API allowing players to make moves to modify the internal game state
+     * Given a player id and action, handles the full process of validating, executing, and advancing the game loop
+     * Returns a JSON string containing either an error or a response indicating the events which occurred and the complete new game state
      */
     pub fn player_move(&mut self, player_id: i32, str_action: String, amount: i32) -> String {
-        let action = Action::from_str(str_action, Some(amount));
-        if action.is_none() {
-            return serde_json::json!({"error": "Invalid move"}).to_string();
+        let action = match Action::from_str(str_action, Some(amount)) {
+            Some(a) => a,
+            None => return serde_json::json!({"error": "Invalid move"}).to_string(),
+        };
+
+        let current_turn_id = match self.players.get(self.turn_index) {
+            Some(p) => p.id as i32,
+            None => return serde_json::json!({"error": "No active turn player"}).to_string(),
+        };
+
+        if current_turn_id != player_id {
+            return serde_json::json!({"error": "Invalid turn order"}).to_string();
         }
 
-        let mut events: Vec<MoveEvent> = Vec::new();
-        if let Err(e) = self.execute_action(player_id, action.unwrap(), &mut events) {
-            return e;
+        let mut events = Vec::new();
+        if let Err(err) = self.apply_action(self.turn_index, action, &mut events) {
+            return err;
         }
 
-        let game_state_string = self.get_game_state(usize::MAX);
-        let game_state: serde_json::Value = serde_json::from_str(&game_state_string).unwrap();
+        self.advance_game_loop(&mut events);
 
-        let result: MoveResult = MoveResult { events, game_state };
-
-        serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
+        let game_state_val: serde_json::Value = serde_json::from_str(&self.get_game_state(usize::MAX)).unwrap();
+        serde_json::to_string(&MoveResult { events, game_state: game_state_val }).unwrap_or_else(|_| "{}".to_string())
     }
 
     #[wasm_bindgen]
     /**
-     * Removes a player at the end of the current game
+     * Queues a player for removal at the end of the current round
+     * Returns a JSON string error if not possible
      */
     pub fn queue_remove_player(&mut self, player_id: i32) -> String {
         if let Ok(player_index) = self.get_player_index(player_id as usize) {
@@ -958,7 +1034,8 @@ impl Game {
 
     #[wasm_bindgen]
     /**
-     * Removes a player immediately
+     * Immediately removes a player from the game
+     * Returns a JSON string error if not possible
      */
     pub fn force_remove_player(&mut self, player_id: i32) -> String {
         if let Ok(player_index) = self.get_player_index(player_id as usize) {
@@ -969,293 +1046,10 @@ impl Game {
         }
     }
 
-    fn get_player_index(&self, player_id: usize) -> Result<usize, String> {
-        if let Some(pos) = self.players.iter().position(|p| p.id == player_id) {
-            Ok(pos)
-        } else {
-            Err(serde_json::json!({"error": "Could not find player with specified id"}).to_string())
-        }
-
-    }
-
-    fn execute_action(&mut self, player_id: i32, action: Action, events: &mut Vec<MoveEvent>) -> Result<(), String> {
-        let index_result = self.get_player_index(player_id as usize);
-        if index_result.is_err() {
-            return Err(index_result.unwrap_err());
-        }
-        let player_index = index_result.unwrap();
-
-        if self.turn_index as i32 != player_id {
-            return Err(serde_json::json!({"error": "Invalid turn order"}).to_string());
-        } else if self.players[player_index].folded {
-            return Err(serde_json::json!({"error": "Already folded"}).to_string());
-        }
-
-        let mut turn_ended = false;
-        match action {
-            Action::Fold => {
-                let player = &mut self.players[player_index];
-                player.folded = true;
-                player.acted = true;
-                turn_ended = true;
-            },
-            Action::Call => {
-                let player = &mut self.players[player_index];
-                let player_bet = (self.bet + player.forced_bet - player.bet).min(player.chips);
-                player.chips -= player_bet;
-                player.bet += player_bet;
-                self.round_pool += player_bet;
-
-                player.acted = true;
-            },
-            Action::Raise(raise) => {
-                {
-                    let player = &mut self.players[player_index];
-                    // reject raise if the player cannot afford it
-                    if raise < self.ctx.min_raise {
-                        return Err(serde_json::json!({"error": "Raise below minimum threshold"}).to_string());
-                    }
-
-                    let raise_cost = self.bet + player.forced_bet + raise - player.bet;
-                    if player.chips < raise_cost {
-                        return Err(serde_json::json!({"error": "Cannot afford raise"}).to_string());
-                    }
-
-                    player.chips -= raise_cost;
-                    player.bet += raise_cost;
-                    self.round_pool += raise_cost;
-                    self.bet += raise;
-                }
-
-                // all remaining players should need to act again after a raise
-                for p in self.players.iter_mut() {
-                    if !p.folded || !(p.chips == 0) {
-                        p.acted = false;
-                    }
-                }
-
-                self.players[player_index].acted = true;
-            },
-            Action::Timeout => {
-                let player = &mut self.players[player_index];
-                if !player.acted {
-                    player.folded = true;
-                }
-                player.acted = true;
-                turn_ended = true;
-            },
-            Action::EndMove => {
-                let player = &mut self.players[player_index];
-                if !player.acted {
-                    return Err(serde_json::json!({"error": "Must act before ending move"}).to_string());
-                }
-                turn_ended = true;
-            }
-        }
-
-        let player = &self.players[player_index];
-        events.push(
-            MoveEvent { player_id: player_id as usize, action: action.to_string() }
-        );
-        if player.folded || (player.chips == 0 && player.special_cards.is_empty()) {
-            turn_ended = true;
-        }
-
-        if turn_ended {
-            return self.handle_round_end(player_index, events);
-        }
-
-        Ok(())
-    }
-
-    fn handle_round_end(&mut self, player_index: usize, events: &mut Vec<MoveEvent>) -> Result<(), String> {
-        let mut active_players = 0;
-        let mut round_finished = true;
-
-        // check for remaining players in round
-        for p in &self.players {
-            if !p.folded && p.chips > 0 {
-                active_players += 1;
-                if !p.acted || p.bet != self.bet {
-                    round_finished = false;
-                }
-            }
-        }        
-
-        if round_finished || active_players <= 1 {
-            self.update_round();
-        } else {
-            let player_count = self.players.len();
-            self.turn_index = (self.turn_index + 1) % player_count;
-
-            while self.players[self.turn_index].folded || self.players[self.turn_index].chips == 0 {
-                self.players[self.turn_index].acted = true;
-                self.turn_index = (self.turn_index + 1) % player_count;
-            }
-
-            let ai_data = match self.players[self.turn_index].player_type {
-                PlayerType::Computer(ai) => Some(ai),
-                _ => None,
-            };
-            
-            if let Some(mut ai) = ai_data {
-                let action = ai.calculate_next_action(self.turn_index, self);
-                self.players[self.turn_index].player_type = PlayerType::Computer(ai);
-                if let Err(e) = self.execute_action(self.turn_index as i32, action, events) {
-                    return Err(e);
-                }
-                return self.execute_action(self.turn_index as i32, Action::EndMove, events);
-            };
-        }
-
-        Ok(())
-    }
-
-    fn process_pots(&mut self) {
-        loop {
-            let mut min_bet = i32::MAX;
-            let mut max_bet = i32::MIN;
-            let mut participants = 0;
-
-            for p in &self.players {
-                if p.bet > 0 {
-                    min_bet = min_bet.min(p.bet);
-                    max_bet = max_bet.max(p.bet);
-                }
-                participants += 1;
-            }
-
-            if participants == 0 {
-                break;
-            }
-
-            if self.pots.is_empty() {
-                self.pots.push(Pot { amount: 0, players: Vec::new() });
-            }
-            
-            let pot_i = self.pots.len() - 1;
-            for i in 0..self.players.len() {
-                let player = &mut self.players[i];
-                if player.bet > 0 {
-                    player.bet -= player.bet.min(min_bet);
-                    let current_pot = &mut self.pots[pot_i];
-                    current_pot.amount += min_bet;
-
-                    if !player.folded && !current_pot.players.contains(&player.id) {
-                        current_pot.players.push(player.id);
-                    }
-                }
-            }
-
-            if min_bet != max_bet {
-                self.pots.push(Pot { amount: 0, players: Vec::new() });
-            }
-        }
-    }
-
-    fn update_round(&mut self) {
-        self.process_pots();
-
-        let round = self.round.clone();
-        fn process_round(game: &mut Game, cards_dealt: usize, special_cards_dealt: usize, next_round: Round) {
-            (0..cards_dealt).for_each(|_| {
-                let next_card = game.deck.pop().unwrap_or(ExpandedCard::Unmarked);
-                game.community.push(next_card);
-            });
-
-            game.players.iter_mut().for_each(|p| { p.bet = 0; p.acted = false; } );
-            game.bet = 0;
-            game.round_pool = 0;
-            game.turn_index = 0;
-            game.round = next_round;              
-        }
-
-        match round {
-            Round::Room => self.round = Round::Preround,
-            Round::Preround => {
-                let mut participants = 0;
-                for p in &self.players {
-                    if p.chips > 0 {
-                        participants += 1;
-                    }
-                }
-
-                if participants <= 1 {
-                    self.round = Round::Room;
-                    return;
-                }
-
-                self.deck.shuffle(&mut self.ctx.rng);
-                for player in self.players.iter_mut() {
-                    player.cards.push(self.deck.pop().unwrap_or(ExpandedCard::Unmarked));
-                    player.cards.push(self.deck.pop().unwrap_or(ExpandedCard::Unmarked));
-                }
-
-                for (i, p) in self.players.iter_mut().enumerate() {
-                    p.forced_bet = if i == 0 {
-                        self.ctx.blind_size / 2
-                    } else if i == 1 {
-                        self.ctx.blind_size
-                    } else {
-                        0
-                    }
-                }
-
-                process_round(self, 0, 0, Round::Preflop);
-            },
-            Round::Preflop => process_round(self, 3, 0, Round::Flop),
-            Round::Flop => process_round(self, 1, 0, Round::Turn),
-            Round::Turn => process_round(self, 1, 0, Round::River),
-            Round::River => process_round(self, 0, 0, Round::Showdown),
-            Round::Showdown => {
-                let mut hands: Vec<(usize, Hand)> = self.players.iter().map(|p| {
-                    let hand_cards: Vec<ExpandedCard> = [&self.community[..], &p.cards[..]].concat();
-
-                    (p.id, Hand::new(&hand_cards, &self.ctx))
-                }).collect();
-
-                hands.sort_by(|(_, a_h), (_, b_h)| a_h.compare(b_h));
-                for pot in &self.pots {
-                    let mut winners: Vec<usize> = Vec::new();
-                    let winning_hand = &hands.iter().rev().find(|(i, _)| { pot.players.contains(i) }).unwrap().1;
-                    for (i, hand) in hands.iter().rev() {
-                        let won = hand.compare(winning_hand);
-                        if pot.players.contains(i) && (won == Ordering::Equal || won == Ordering::Greater) {
-                            winners.push(*i);
-                            break;
-                        }
-                    }
-
-                    let pot_split = pot.amount / winners.len() as i32;
-                    let mut remaining_chips = pot.amount % winners.len() as i32;
-                    for winner in winners {
-                        if let Ok(index) = self.get_player_index(winner) {
-                            self.players[index].chips += pot_split;
-                            if remaining_chips > 0 {
-                                self.players[index].chips += 1;
-                                remaining_chips -= 1;
-                            }
-                        }
-                    }
-                }
-                self.end_round();
-            }
-        }
-    }
-
-    fn end_round(&mut self) {
-        for index in (0..self.players.len()).rev() {
-            if self.players[index].remove {
-                self.players.remove(index);
-            }
-        }
-
-        self.games_played += 1;
-        self.players.rotate_left(1);
-        self.round = Round::Preround;
-    }
-
     #[wasm_bindgen]
+    /**
+     * Returns a JSON string containing information about the current number of humans and bots in the game
+     */
     pub fn get_player_info(&self) -> String {
         let mut humans = 0;
         let mut bots = 0;
@@ -1268,97 +1062,496 @@ impl Game {
     }
 
     #[wasm_bindgen]
+    /**
+     * Gets the current round as a string
+     */
     pub fn get_round(&self) -> String {
-        return self.round.to_string();
+        self.round.to_string()
     }
 
     #[wasm_bindgen]
-    pub fn toggle_id_with_bot(&mut self, player_id: i32, bot: bool) -> String {
-        let ai_type = AIType::Safe;
-        let index_result = self.get_player_index(player_id as usize);
-        if let Err(error) = index_result {
-            return error;
-        }
-        let index = index_result.unwrap();
-        let player = &mut self.players[index];
-        let mut event_log: Vec<MoveEvent> = Vec::new();
-        
-        if bot {
-            event_log.push(MoveEvent { player_id: player.id, action: "SWAP_BOT".to_string() });
-            let mut new_ai = AI::new(ai_type);
-            player.player_type = PlayerType::Computer(new_ai);
-
-            if self.turn_index == index && !player.folded {
-                let action = new_ai.calculate_next_action(index, self);
-                if let Err(e) = self.execute_action(player_id, action, &mut event_log) {
-                    return e;
-                }
-            }
-        } else {
-            event_log.push(MoveEvent { player_id: player.id, action: "SWAP_HUMAN".to_string() });
-            player.player_type = PlayerType::Human;
-        }
-
-        let state_string: String = self.get_game_state(usize::MAX);
-        let state_value: serde_json::Value = serde_json::from_str(&state_string).unwrap();
-        let result = MoveResult { events: event_log, game_state: state_value };
-
-        serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string())
-    }
-
-    #[wasm_bindgen]
+    /**
+     * Gets the ID of the player who needs to act next
+     */
     pub fn get_current_turn_player(&self) -> i32 {
-        if let Ok(i) = self.get_player_index(self.turn_index) {
-            return i as i32;
+        if self.turn_index < self.players.len() {
+            return self.players[self.turn_index].id as i32;
         }
         0
     }
 
-    /**
-     * Returns a JSON string capturing the full game state as seen by the specified player id
-     */
     #[wasm_bindgen]
+    /**
+     * Swaps a player with a given ID's type with a bot or human
+     * Returns a JSON string including events and the new game state after swapping
+     */
+    pub fn toggle_id_with_bot(&mut self, player_id: i32, bot: bool) -> String {
+        let index = match self.get_player_index(player_id as usize) {
+            Ok(index) => index,
+            Err(err) => return err,
+        };
+
+        let mut event_log = Vec::new();
+        
+        if bot {
+            let pid = self.players[index].id;
+            event_log.push(MoveEvent { player_id: pid, action: "SWAP_BOT".to_string() });
+            let new_ai = AI::new(AIType::Safe);
+            self.players[index].player_type = PlayerType::Computer(new_ai);
+
+            if self.turn_index == index && !self.players[index].folded && self.round >= Round::Preflop && self.round < Round::Showdown {
+                self.advance_game_loop(&mut event_log);
+            }
+        } else {
+            let pid = self.players[index].id;
+            event_log.push(MoveEvent { player_id: pid, action: "SWAP_HUMAN".to_string() });
+            self.players[index].player_type = PlayerType::Human;
+        }
+
+        let state_value: serde_json::Value = serde_json::from_str(&self.get_game_state(usize::MAX)).unwrap();
+        serde_json::to_string(&MoveResult { events: event_log, game_state: state_value }).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    #[wasm_bindgen]
+    /**
+     * Gets the current game state, as seen by the specified player as a JSON string
+     */
     pub fn get_game_state(&self, player_id: usize) -> String {
+        let is_showdown = self.round == Round::Showdown;
         let player_states: Vec<PlayerState> = self.players.iter().enumerate().map(|(i, p)| {
-            let hole_cards = if self.round == Round::Showdown || i == player_id {
+            let hole_cards = if is_showdown || p.id == player_id {
                 p.cards.iter().map(|c| c.to_string()).collect()
             } else {
                 p.cards.iter().map(|_| "HIDDEN".to_string()).collect()
             };
 
-            let special_cards = if i == player_id {
+            let special_cards = if p.id == player_id {
                 p.special_cards.iter().map(|c| c.to_string()).collect()
             } else {
                 vec![]
             };
 
+            let full_cards = [&self.community[..], &p.cards[..]].concat();
+            let hand_eval = Hand::new(&full_cards, &self.ctx);
+            let hand_type_str = if !p.folded && !full_cards.is_empty() && (p.id == player_id || is_showdown) {
+                hand_eval.hand_type.to_string()
+            } else {
+                String::new()
+            };
+
             PlayerState {
                 id: p.id,
                 chips: p.chips,
-                round_bet: p.bet,
+                round_bet: p.round_bet,
+                total_bet: p.total_bet,
                 folded: p.folded,
                 acted: p.acted,
-                is_turn: self.turn_index == i && !(self.round == Round::Showdown),
+                is_turn: self.turn_index == i && !is_showdown && self.round != Round::Preround,
+                is_dealer: self.dealer_index == i,
                 hole_cards,
                 special_cards,
+                hand_type: hand_type_str,
             }
         }).collect();
 
         let pots: Vec<i32> = self.pots.iter().map(|p| p.amount).collect();
-        let pot_total: i32 = pots.iter().sum();
+        let total_pot: i32 = pots.iter().sum::<i32>() + self.round_pool;
 
         let complete_state = GameState {
             round_name: self.round.to_string(),
             community_cards: self.community.iter().map(|c| c.to_string()).collect(),
             pots,
             round_bet_sum: self.round_pool,
-            overall_sum: pot_total + self.round_pool,
+            overall_sum: total_pot,
             highest_bet: self.bet,
             deck_cards: self.deck.len(),
+            winning_hand_type: self.winning_hand_type.clone(),
             players: player_states,
         };
 
         serde_json::to_string(&complete_state).unwrap_or_else(|_| "Failed to parse state as string".to_string())
+    }
+
+    /**
+     * Determines how the game should advance after a turn is completed
+     */
+    fn advance_game_loop(&mut self, events: &mut Vec<MoveEvent>) {
+        loop {
+            if self.round == Round::Room || self.round == Round::Preround {
+                break;
+            }
+
+            // if all other players have folded, end the hand
+            let unfolded_players: Vec<usize> = self.players.iter().filter(|p| !p.folded).map(|p| p.id).collect();
+            if unfolded_players.len() <= 1 {
+                if let Some(&winner_id) = unfolded_players.first() {
+                    self.award_pot_to_single_winner(winner_id);
+                }
+                break;
+            }
+
+            // otherwise, if the current round is now complete, advance the round
+            if self.is_round_complete() {
+                self.advance_to_next_round();
+                if self.round == Round::Preround || self.round == Round::Showdown {
+                    break;
+                }
+                continue;
+            }
+
+            // if the current round is not over, advance the turn index to the next player
+            let current_player = &self.players[self.turn_index];
+            if !current_player.acted {
+                match current_player.player_type {
+                    PlayerType::Computer(mut ai) => {
+                        let ai_action = ai.calculate_next_action(self.turn_index, self);
+                        let _ = self.apply_action(self.turn_index, ai_action, events);
+
+                        self.turn_index = (self.turn_index + 1) % self.players.len();
+                        continue;
+                    }
+                    PlayerType::Human => {
+                        break;
+                    }
+                }
+            }
+
+            if current_player.acted && current_player.round_bet == self.bet {
+                self.turn_index = (self.turn_index + 1) % self.players.len();
+            } else {
+                break;    
+            }           
+        }
+    }
+
+    /**
+     * Given an action from a player at a given .players() index, executes that action
+     * Modifies the internal game state and an event log, including additional intermediate bot moves
+     * Returns an error if applicable
+     */
+    fn apply_action(&mut self, player_index: usize, action: Action, events: &mut Vec<MoveEvent>) -> Result<(), String> {
+        let player_id = self.players[player_index].id;
+
+        match action {
+            Action::Fold => {
+                let p = &mut self.players[player_index];
+                p.folded = true;
+                p.acted = true;
+            }
+            Action::Call => {
+                let p = &mut self.players[player_index];
+                let call_amount = (self.bet - p.round_bet).min(p.chips);
+                p.chips -= call_amount;
+                p.round_bet += call_amount;
+                p.total_bet += call_amount;
+                self.round_pool += call_amount;
+                p.acted = true;
+            }
+            Action::Raise(raise) => {
+                if raise < self.ctx.min_raise {
+                    return Err(serde_json::json!({"error": "Raise below minimum threshold"}).to_string());
+                }
+
+                let p = &self.players[player_index];
+                let max_raise = p.chips - (self.bet - p.round_bet).max(0);
+                let true_raise = raise.min(max_raise);
+                let raise_cost = ((self.bet + true_raise) - p.round_bet).min(p.chips);
+
+                let p = &mut self.players[player_index];
+                p.chips -= raise_cost;
+                p.round_bet += raise_cost;
+                p.total_bet += raise_cost;
+                self.round_pool += raise_cost;
+                self.bet = p.round_bet.max(self.bet);
+
+                for (i, other) in self.players.iter_mut().enumerate() {
+                    if i != player_index && !other.folded && other.chips > 0 {
+                        other.acted = false;
+                    }
+                }
+                self.players[player_index].acted = true;
+            }
+            Action::Timeout => {
+                let p = &mut self.players[player_index];
+                if !p.acted {
+                    p.folded = true;
+                }
+                p.acted = true;
+            }
+            Action::EndMove => {
+                if !self.players[player_index].acted {
+                    return Err(serde_json::json!({"error": "Must act before ending move"}).to_string());
+                }
+            }
+        }
+
+        events.push(MoveEvent { player_id, action: action.to_string() });
+        Ok(())
+    }
+
+    /**
+     * Gets .players() array index from player id
+     */
+    fn get_player_index(&self, player_id: usize) -> Result<usize, String> {
+        if let Some(pos) = self.players.iter().position(|p| p.id == player_id) {
+            Ok(pos)
+        } else {
+            Err(serde_json::json!({"error": "Could not find player with specified id"}).to_string())
+        }
+    }
+
+    fn process_pots(&mut self) {
+        loop {
+            let mut min_bet = i32::MAX;
+            let mut active_bets = 0;
+
+            for p in &self.players {
+                if p.round_bet > 0 {
+                    min_bet = min_bet.min(p.round_bet);
+                    active_bets += 1;
+                }
+            }
+
+            if active_bets == 0 || min_bet == i32::MAX {
+                break;
+            }
+
+            if self.pots.is_empty() {
+                self.pots.push(Pot { amount: 0, players: Vec::new() });
+            }
+
+            let pot_i = self.pots.len() - 1;
+            
+            for player in self.players.iter_mut() {
+                if player.round_bet > 0 {
+                    let contribution = player.round_bet.min(min_bet);
+                    player.round_bet -= contribution;
+                    
+                    self.pots[pot_i].amount += contribution;
+
+                    if !player.folded && !self.pots[pot_i].players.contains(&player.id) {
+                        self.pots[pot_i].players.push(player.id);
+                    }
+                }
+            }
+
+            let has_remaining_bets = self.players.iter().any(|p| p.round_bet > 0);
+            if has_remaining_bets {
+                self.pots.push(Pot { amount: 0, players: Vec::new() });
+            }
+        }
+
+        self.round_pool = 0;
+    }
+
+    fn is_round_complete(&self) -> bool {
+        let active_players: Vec<&Player> = self.players.iter().filter(|p| !p.folded).collect();
+        if active_players.len() <= 1 {
+            return true;
+        }
+        active_players.iter().all(|p| p.chips == 0 || (p.acted && p.round_bet == self.bet))
+    }
+
+    fn advance_to_next_round(&mut self) {
+        self.process_pots();
+
+        for p in self.players.iter_mut() {
+            p.round_bet = 0;
+            p.acted = false;
+        }
+        self.bet = 0;
+        self.round_pool = 0;
+
+        let len = self.players.len();
+
+        let start_index = if len == 2 { 
+            self.dealer_index 
+        } else { 
+            (self.dealer_index + 1) % len 
+        };
+        
+        let mut first_turn = start_index;
+        for _ in 0..len {
+            if !self.players[first_turn].folded && self.players[first_turn].chips > 0 {
+                break;
+            }
+            first_turn = (first_turn + 1) % len;
+        }
+        self.turn_index = first_turn;
+
+        match self.round {
+            Round::Preflop => {
+                self.deal_community_cards(3);
+                self.round = Round::Flop;
+            }
+            Round::Flop => {
+                self.deal_community_cards(1);
+                self.round = Round::Turn;
+            }
+            Round::Turn => {
+                self.deal_community_cards(1);
+                self.round = Round::River;
+            }
+            Round::River => {
+                self.round = Round::Showdown;
+                self.resolve_showdown();
+            }
+            _ => {}
+        }
+    }
+
+    fn start_new_hand(&mut self) {
+        let active_count = self.players.iter().filter(|p| p.chips > 0).count();
+        if active_count <= 1 {
+            self.round = Round::Room;
+            self.pots.clear();
+            self.community.clear();
+            self.round_pool = 0;
+            self.bet = 0;
+            return;
+        }
+
+        self.round = Round::Preflop;
+        self.bet = 0;
+        self.round_pool = 0;
+        self.pots.clear();
+        self.community.clear();
+        self.winning_hand_type.clear();
+
+        self.deck = get_custom_deck(&self.ctx.deck_type);
+        self.deck.shuffle(&mut self.ctx.rng);
+
+        for p in self.players.iter_mut() {
+            // reset player params
+            p.cards.clear();
+            p.special_cards.clear();
+            p.round_bet = 0;
+            p.total_bet = 0;
+            p.acted = false;
+            p.folded = p.chips <= 0;
+
+            // reset ai params
+            if let PlayerType::Computer(ref mut ai) = p.player_type {
+                ai.total_bet = 0;
+                ai.budget = 0;
+            }
+
+            // give cards
+            if !p.folded {
+                p.cards.push(self.deck.pop().unwrap_or(ExpandedCard::Unmarked));
+                p.cards.push(self.deck.pop().unwrap_or(ExpandedCard::Unmarked));
+            }
+        }
+
+        let len = self.players.len();
+
+        let mut make_player_pay_blind = |player_index: usize, blind_size: i32| {
+            let blind_size = blind_size.min(self.players[player_index].chips);
+            self.players[player_index].chips -= blind_size;
+            self.players[player_index].total_bet = blind_size;
+            self.players[player_index].round_bet = blind_size;
+
+            return blind_size;
+        };
+
+        let mut pay_blinds = |sb_index: usize, end_index: usize| {
+            let sb_index = sb_index;
+            let bb_index = (sb_index + 1) % len;
+
+            let sb = make_player_pay_blind(sb_index, self.ctx.blind_size / 2);
+            let bb = make_player_pay_blind(bb_index, self.ctx.blind_size);
+
+            self.round_pool = sb + bb;
+            self.bet = bb;
+            self.turn_index = end_index;
+        };
+
+        // heads up rules if 2 players
+        if len == 2 {
+            pay_blinds(self.dealer_index, self.dealer_index);
+        // otherwise typical rules
+        } else if len > 2 {
+            pay_blinds((self.dealer_index + 1) % len, (self.dealer_index + 3) % len);
+        } else {
+            self.turn_index = 0;
+        }
+    }
+
+    fn resolve_showdown(&mut self) {
+        self.process_pots();
+
+        let mut hands: Vec<(usize, Hand)> = self.players.iter()
+            .filter(|p| !p.folded)
+            .map(|p| {
+                let cards = [&self.community[..], &p.cards[..]].concat();
+                (p.id, Hand::new(&cards, &self.ctx))
+            }).collect();
+
+        hands.sort_by(|(_, a), (_, b)| a.compare(b));
+
+        if let Some(winning_entry) = hands.last() {
+            self.winning_hand_type = winning_entry.1.hand_type.to_string();
+        }
+
+        // iterates through all pots, finding winners for each and individually distributing
+        // pot chips
+        for pot in &self.pots {
+            let mut winners = Vec::new();
+            if let Some(winning_entry) = hands.iter().rev().find(|(id, _)| pot.players.contains(id)) {
+                let winning_hand = &winning_entry.1;
+                for (id, hand) in hands.iter().rev() {
+                    if pot.players.contains(id) && hand.compare(winning_hand) != Ordering::Less {
+                        winners.push(*id);
+                    }
+                }
+            }
+
+            if !winners.is_empty() {
+                let split = pot.amount / winners.len() as i32;
+                let mut remainder = pot.amount % winners.len() as i32;
+                for winner_id in winners {
+                    if let Ok(index) = self.get_player_index(winner_id) {
+                        self.players[index].chips += split;
+                        // this should never execute, as pot size always has to be a multiple of the number of participants
+                        if remainder > 0 {
+                            self.players[index].chips += 1;
+                            remainder -= 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        self.pots.clear();
+        self.round_pool = 0;
+    }
+
+    fn award_pot_to_single_winner(&mut self, winner_id: usize) {
+        self.process_pots();
+        let total_pot: i32 = self.pots.iter().map(|p| p.amount).sum::<i32>();
+        if let Ok(index) = self.get_player_index(winner_id) {
+            self.players[index].chips += total_pot;
+        }
+        self.pots.clear();
+        self.round_pool = 0;
+
+        self.round = Round::Showdown;
+    }
+
+    fn end_hand(&mut self) {
+        self.games_played += 1;
+        self.players.retain(|p| !p.remove);
+        if !self.players.is_empty() {
+            self.dealer_index = (self.dealer_index + 1) % self.players.len();
+        }
+        self.round = Round::Preround;
+    }
+
+    fn deal_community_cards(&mut self, count: usize) {
+        for _ in 0..count { 
+            let card = self.deck.pop().unwrap_or(ExpandedCard::Unmarked);
+            self.community.push(card);
+        }
     }
 }
 
@@ -1448,8 +1641,8 @@ fn get_straight(cards: &Vec<ExpandedCard>, size: usize, suit: Option<Suit>, hand
             // check for matches
             for n in (i - size_i32 + 1..=i).rev() {
                 // loops - ensures ace low straights are checked
-                let idx = n.rem_euclid(13) as usize;
-                if ctx.organised_cards[idx].len() >= 1 {
+                let index = n.rem_euclid(13) as usize;
+                if ctx.organised_cards[index].len() >= 1 {
                     matches += 1;
                 }
             }
@@ -1457,9 +1650,9 @@ fn get_straight(cards: &Vec<ExpandedCard>, size: usize, suit: Option<Suit>, hand
             // if there are sufficient matches, build the straight
             if matches + ctx.jokers >= size {
                 for n in (i - size_i32 + 1..=i).rev() {
-                    let idx = n.rem_euclid(13) as usize;
-                    straight.push((Rank::from(idx), if ctx.organised_cards[idx].len() >= 1 {
-                        vec![ctx.organised_cards[idx][ctx.used_counts[idx]]]
+                    let index = n.rem_euclid(13) as usize;
+                    straight.push((Rank::from(index), if ctx.organised_cards[index].len() >= 1 {
+                        vec![ctx.organised_cards[index][ctx.used_counts[index]]]
                     } else {
                         vec![usize::MAX]
                     }));
@@ -1516,6 +1709,228 @@ fn get_deck(jokers: usize, rule: Option<fn(&ExpandedCard) -> bool>) -> Vec<Expan
     deck
 }
 
-fn main() {
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
 
+    fn create_valid_config_json(player_count: usize, bot_count: usize) -> String {
+        let bots: Vec<String> = (0..bot_count).map(|_| "smart".to_string()).collect();
+        serde_json::json!({
+            "player_count": player_count,
+            "bots": bots,
+            "rng_seed": 0,
+            "blind_size": 20,
+            "min_raise": 10,
+            "starting_chips": 1000,
+            "deck_type": "standard",
+            "max_players": 4
+        }).to_string()
+    }
+
+    #[test]
+    fn test_player_count_cannot_exceed_max() {
+        let mut game = Game::new();
+        let config_str = serde_json::json!({
+            "player_count": 5,
+            "bots": 0,
+            "rng_seed": 0,
+            "blind_size": 20,
+            "min_raise": 10,
+            "starting_chips": 1000,
+            "deck_type": "standard",
+            "max_players": 4
+        }).to_string();
+
+        let err = game.update_config(&config_str);
+        assert_ne!(err, "");
+    }
+
+    #[test]
+    fn test_game_creation_and_config_update() {
+        let mut game = Game::new();
+        assert_eq!(game.get_round(), "room");
+
+        let config_str = create_valid_config_json(2, 0);
+        let err = game.update_config(&config_str);
+        assert_eq!(err, "");
+
+        let state_str = game.get_game_state(0);
+        let state: Value = serde_json::from_str(&state_str).expect("Failed to parse GameState JSON");
+        
+        assert_eq!(state["round_name"], "room");
+        assert_eq!(state["players"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_initialise_transition() {
+        let mut game = Game::new();
+        game.update_config(&create_valid_config_json(2, 2));
+
+        game.initialise();
+        assert_eq!(game.get_round(), "preround");
+
+        let state_str = game.get_game_state(0);
+        let state: Value = serde_json::from_str(&state_str).unwrap();
+        let players = state["players"].as_array().unwrap();
+
+        assert_eq!(players.len(), 4);
+        for player in players {
+            assert_eq!(player["chips"], 1000);
+            assert_eq!(player["folded"], false);
+        }
+    }
+
+    #[test]
+    fn test_round_transition_from_preround_to_preflop() {
+        let mut game = Game::new();
+        game.update_config(&create_valid_config_json(2, 0));
+        game.initialise();
+        game.start();
+
+        let state_str = game.get_game_state(0);
+        let state: Value = serde_json::from_str(&state_str).unwrap();
+        let players = state["players"].as_array().unwrap();
+
+        // players should have received their hole cards
+        assert_eq!(players[0]["hole_cards"].as_array().unwrap().len(), 2);
+        assert_eq!(players[1]["hole_cards"].as_array().unwrap().len(), 2);
+
+        // and should have paid blinds
+        assert_eq!(players[0]["total_bet"], 10, "Expected total bet to be 10 (small blind), was {}", players[0]["bet"]);
+        assert_eq!(players[1]["total_bet"], 20, "Expected total bet to be 20 (big blind), was {}", players[1]["bet"]);
+    }
+
+    #[test]
+    fn test_player_moves_and_turn_rotation() {
+        let mut game = Game::new();
+        game.update_config(&create_valid_config_json(2, 0));
+        game.initialise();
+        game.start(); // Preflop
+
+        let active_player = game.get_current_turn_player();
+        
+        game.player_move(active_player, "call".to_string(), 0);
+        
+        let state_str = game.get_game_state(active_player as usize);
+        let state: Value = serde_json::from_str(&state_str).unwrap();
+        assert_eq!(state["highest_bet"], 20);
+    }
+
+    #[test]
+    fn test_bot_execution_without_panic() {
+        let mut game = Game::new();
+        // 1 human, 1 bot
+        game.update_config(&create_valid_config_json(1, 1)); 
+        game.initialise();
+        game.start();
+
+        let human_id = game.players.iter().find(|p| match p.player_type {
+            PlayerType::Human => true,
+            _ => false
+        }).map(|p| p.id as i32).unwrap_or(0);
+
+        // If it's human's turn, make a valid move
+        if game.get_current_turn_player() == human_id {
+            game.player_move(human_id, "call".to_string(), 0);
+        }
+
+        // Validate that state is active without panicking or locking up
+        assert!(game.get_round() != "room");
+    }
+
+    #[test]
+    fn test_midgame_add_and_remove_player() {
+        let mut game = Game::new();
+        game.update_config(&create_valid_config_json(2, 0));
+        
+        game.initialise();
+        game.start();
+        
+        let add_res_str = game.try_add_player("human".to_string());
+        let add_res: Value = serde_json::from_str(&add_res_str).unwrap();
+        assert!(add_res.as_object().unwrap().contains_key("error"), "Adding player mid-hand should fail");
+    }
+
+    #[test]
+    fn test_game_ends_after_no_humans_remain() {
+        let mut game = Game::new();
+        game.update_config(&create_valid_config_json(1, 1));
+
+        game.initialise();
+        game.start();
+
+        let human_id = game.players.iter().find(|p| match p.player_type {
+            PlayerType::Human => true,
+            _ => false
+        }).map(|p| p.id as i32).unwrap_or(0);
+
+        game.player_move(human_id, "FOLD".to_string(), 0);
+
+        assert_eq!(game.round, Round::Showdown, "Expected round to end after last human player folded, instead round is {}", game.round);
+    }
+
+    #[test]
+    fn test_game_round_progresses_after_moves() {
+        let mut game = Game::new();
+        game.update_config(&create_valid_config_json(2, 0));
+
+        game.initialise();
+        game.start();
+
+        let (p1_id, p2_id) = (game.players[0].id as i32, game.players[1].id as i32);    
+
+        assert_eq!(game.round, Round::Preflop, "Game round expected to be Preflop, actual: {}", game.round);
+
+        game.player_move(p1_id, "CALL".to_string(), 0);
+        game.player_move(p1_id, "ENDMOVE".to_string(), 0);
+
+        game.player_move(p2_id, "CALL".to_string(), 0);
+        game.player_move(p2_id, "ENDMOVE".to_string(), 0);
+
+        assert_eq!(game.round, Round::Flop, "Game round expected to be Flop, actual: {}", game.round);
+    }
+
+    #[test]
+    fn test_complex_pot_paid_correctly() {
+        let mut game = Game::new();
+        game.update_config(&create_valid_config_json(3, 0));
+
+        game.initialise();
+
+        let (p1_id, p2_id, p3_id) = (game.players[0].id as i32, game.players[1].id as i32, game.players[2].id as i32);
+        game.players[0].chips = 200;
+        game.players[1].chips = 500;
+        game.players[2].chips = 1000;
+
+        game.start();
+
+        // p1 has 4 aces (wins overall round)
+        game.players[0].cards = vec![ExpandedCard::get_card("a", "s"), ExpandedCard::get_card("a", "s"), ExpandedCard::get_card("a", "s"), ExpandedCard::get_card("a", "s")];
+        // p2 has 4 kings (second)
+        game.players[1].cards = vec![ExpandedCard::get_card("k", "s"), ExpandedCard::get_card("k", "s"), ExpandedCard::get_card("k", "s"), ExpandedCard::get_card("k", "s")];
+        // p3 has 4 queens (loses)
+        game.players[2].cards = vec![ExpandedCard::get_card("q", "s"), ExpandedCard::get_card("q", "s"), ExpandedCard::get_card("q", "s"), ExpandedCard::get_card("q", "s")];
+
+        // all players go all in
+        game.player_move(p1_id, "RAISE".to_string(), 10000);
+        game.player_move(p1_id, "ENDMOVE".to_string(), 0);
+
+        game.player_move(p2_id, "RAISE".to_string(), 10000);
+        game.player_move(p2_id, "ENDMOVE".to_string(), 0);
+
+        game.player_move(p3_id, "RAISE".to_string(), 10000);
+        game.player_move(p3_id, "ENDMOVE".to_string(), 0);
+
+        // p1 has 600 chips at the end (200 from p1, p2, and p3)
+        assert_eq!(game.players[0].chips, 600, "Expected P1 to have 600 chips. Instead P1: {}, P2: {}, P3: {}", game.players[0].chips, game.players[1].chips, game.players[2].chips);
+
+        // p2 has 600 chips at the end (300 from p2, and p3)
+        assert_eq!(game.players[1].chips, 600, "Expected P2 to have 600 chips. Instead P1: {}, P2: {}, P3: {}", game.players[0].chips, game.players[1].chips, game.players[2].chips);
+
+        // p3 has 500 chips at the end (lost 200 to p1, 300 to p2)
+        assert_eq!(game.players[2].chips, 500);
+    }
 }
+
+fn main() {}

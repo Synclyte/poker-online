@@ -1,0 +1,424 @@
+:root {
+    --background-colour: #2a2a35;
+    --box-colour: #1a1a24;
+    --box-secondary-colour: #14141a;
+    --light-box-colour: #505060;
+    --box-shadow-colour: rgba(0, 0, 0, 0.8);
+
+    --button-colour: #3f3f4e;
+    --secondary-button-colour: #4361ee;
+    --secondary-button-hover-colour: #567df2;
+    --tertiary-button-colour: #e53935;
+    --tertiary-button-hover-colour: #ff5252;
+    --input-focus-colour: #fca311;
+
+    --text-colour: #dcdcdc;
+    --border-colour: #dcdcdc;
+
+    color: var(--text-colour);
+}
+
+.gameContainer {
+    box-sizing: border-box;
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    background-color: var(--box-colour);
+    font-family: 'Jersey 10', sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    image-rendering: pixelated; 
+    padding: 1rem;
+}
+
+.tableHeader {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 4px solid var(--light-box-colour);
+    padding-bottom: 0.5rem;
+    color: var(--text-colour);
+    font-size: 1.6rem;
+}
+
+.headerInfo {
+    display: flex;
+    gap: 2rem;
+}
+
+.pokerFelt {
+    position: relative;
+    flex: 1;
+    margin: 1.5rem 2rem;
+    background: #1b4332;
+    border: 8px solid #2d1810;
+    box-shadow: inset 0 0 0 4px var(--box-secondary-colour), 4px 4px 0px var(--box-shadow-colour);
+    box-sizing: border-box;
+}
+
+/* Canvas Overlay for Flying Chips */
+.chipCanvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 50;
+}
+
+.centerBoard {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    z-index: 5;
+}
+
+.potDisplay {
+    background: var(--box-secondary-colour);
+    border: 2px solid var(--light-box-colour);
+    padding: 0.4rem 1rem;
+    font-size: 1.8rem;
+    color: var(--input-focus-colour);
+    text-shadow: 1px 1px 0px var(--box-shadow-colour);
+}
+
+.communityCards, .holeCards {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    flex-wrap: nowrap;
+}
+
+.cardSlot {
+    width: 62px;
+    height: 90px;
+    border: 2px solid var(--light-box-colour);
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    perspective: 1000px;
+    position: relative;
+    flex-shrink: 0;
+}
+
+.cardInner {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transition: transform 0.6s cubic-bezier(0.4, 0.2, 0.2, 1);
+    transform-style: preserve-3d;
+}
+
+@keyframes flipToFront {
+    0% {
+        transform: rotateY(0deg);
+    }
+    100% {
+        transform: rotateY(180deg);
+    }
+}
+
+.cardFlipped {
+    transform: rotateY(180deg);
+    animation: flipToFront 0.4s cubic-bezier(0.4, 0.2, 0.2, 1) forwards;
+}
+
+.cardFront, .cardBackFace {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    border-radius: 4px;
+    box-sizing: border-box;
+    backface-visibility: hidden;
+    -webkit-backface-visibility: hidden;
+}
+
+.cardFront {
+    background: #ffffff;
+    border: 2px solid #000000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-around;
+    font-size: 2rem;
+    font-weight: bold;
+    user-select: none;
+    transform: rotateY(180deg);
+}
+
+.cardFront span {
+    font-size: 2rem;
+    font-weight: bold;
+    line-height: 1;
+}
+
+.cardFront img {
+    width: 32px;
+    height: 32px;
+}
+
+.cardBackFace {
+    background: #8e1616;
+    border: 2px solid #ffffff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.cardBack {
+    background: #8e1616;
+    border: 2px solid #ffffff;
+}
+
+@keyframes dealVector {
+    0% {
+        transform: translate(var(--deal-x), var(--deal-y)) scale(0.4) rotate(-25deg);
+        opacity: 0.3;
+    }
+    15% {
+        opacity: 1;
+    }
+    100% {
+        transform: translate(0, 0) scale(1) rotate(0deg);
+        opacity: 1;
+    }
+}
+
+.dealtCard {
+    animation: dealVector 0.4s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+/* --- Player Seats --- */
+.playerSeat {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    z-index: 10;
+}
+
+.seatInner {
+    position: relative;
+    padding: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 160px;
+    gap: 0.2rem;
+}
+
+.seatName {
+    font-size: 1.5rem;
+    color: var(--text-colour);
+    font-family: 'Jersey 10', sans-serif;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+}
+
+.handPlaceholder {
+    min-height: 1.5rem;
+}
+
+.seatChips, .seatBet, .handTypeTag {
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', sans-serif;
+    color: var(--input-focus-colour);
+}
+
+.dealerBadgeWrapper {
+    position: absolute;
+    top: -14px;
+    right: -14px;
+    z-index: 12;
+    pointer-events: none;
+}
+
+.dealerBadgeInner {
+    background: var(--box-secondary-colour);
+    color: var(--input-focus-colour);
+    font-family: 'Tiny5', sans-serif;
+    font-size: 1rem;
+    font-weight: bold;
+    padding: 2px 5px 2px 7px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.waitingNotice {
+    font-size: 1.5rem;
+    color: var(--input-focus-colour);
+    text-shadow: 1px 1px 0px var(--box-shadow-colour);
+}
+
+@keyframes checkPulse {
+    0% { transform: translate(-50%, -50%) scale(1); }
+    50% { transform: translate(-50%, -50%) scale(1.15); }
+    100% { transform: translate(-50%, -50%) scale(1); }
+}
+
+.animatingCheck {
+    animation: checkPulse 0.4s ease-out;
+}
+
+.foldedSeat {
+    opacity: 0.35 !important;
+    filter: grayscale(80%);
+    transform: translate(-50%, -50%) scale(0.95) !important;
+    transition: opacity 0.5s ease, transform 0.5s ease, filter 0.5s ease;
+}
+
+.deckStack {
+    position: absolute;
+    top: 41%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 62px;
+    height: 90px;
+    z-index: 5;
+    pointer-events: none;
+}
+
+.deckCardLayer {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    background: #8e1616;
+    border: 2px solid #ffffff;
+    border-radius: 4px;
+    box-shadow: -1px 2px 3px rgba(0, 0, 0, 0.4);
+    box-sizing: border-box;
+    transition: transform 0.3s ease;
+}
+
+/* --- Pixel Action Buttons --- */
+.actionHud {
+    height: 60px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.turnBar {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.btnWrapper {
+    box-sizing: border-box;
+    background: transparent;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    transition: transform 0.1s;
+    filter: drop-shadow(3px 3px 0px var(--box-shadow-colour));
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
+}
+
+.btnWrapper:hover:not(:disabled) {
+    transform: translate(2px, 2px);
+    filter: drop-shadow(1px 1px 0px var(--box-shadow-colour));
+}
+
+.btnWrapper:active:not(:disabled) {
+    transform: translate(3px, 3px);
+    filter: drop-shadow(0px 0px 0px var(--box-shadow-colour));
+}
+
+.btnWrapper:disabled {
+    cursor: not-allowed;
+    filter: drop-shadow(1px 1px 0px var(--box-shadow-colour));
+    transform: translate(2px, 2px);
+    opacity: 0.7;
+}
+
+.btnInner {
+    background: var(--button-colour);
+    padding: 0.5rem 1rem;
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', sans-serif;
+    text-align: center;
+    box-sizing: border-box;
+    color: var(--text-colour);
+}
+
+.btnPrimary {
+    background: var(--secondary-button-colour);
+}
+
+.btnWrapper:hover:not(:disabled) .btnPrimary {
+    background: var(--secondary-button-hover-colour);
+}
+
+.btnDanger {
+    background: var(--tertiary-button-colour);
+}
+
+.btnWrapper:hover:not(:disabled) .btnDanger {
+    background: var(--tertiary-button-hover-colour);
+}
+
+.formGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.formControl {
+    box-sizing: border-box;
+    background: transparent;
+    font-family: 'Jersey 10', sans-serif;
+    font-size: 1.5rem;
+    border: none;
+    outline: none;
+    width: 100%;
+    padding: 0;
+    color: var(--text-colour);
+    text-align: center;
+}
+
+.inputOuter {
+    width: 120px;
+    filter: drop-shadow(2px 2px 0px var(--box-shadow-colour));
+    -webkit-transform: translateZ(0);
+    transform: translateZ(0);
+}
+
+.capacityInner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    background: var(--box-colour);
+}
+
+.capacityBtn {
+    color: var(--input-focus-colour);
+    font-size: 2rem;
+    font-family: 'Jersey 10', sans-serif;
+    padding: 0 0.5rem;
+    cursor: pointer;
+    user-select: none;
+    background: transparent;
+    border: none;
+}
+
+.capacityBtn:hover {
+    color: var(--text-colour);
+}

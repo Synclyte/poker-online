@@ -31,7 +31,7 @@
     font-family: 'Jersey 10', sans-serif;
     overflow: hidden;
     image-rendering: pixelated; 
-    padding: 2rem;
+    padding: 1rem;
 }
 
 .canvasPlaceholder {
@@ -54,17 +54,17 @@
     position: relative;
     z-index: 10;
     width: 100%;
-    max-width: 900px;
+    max-width: 800px;
     filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
 }
 
 .lobbyInner {
-    padding: 3rem;
+    padding: 1.5rem;
     display: flex;
     flex-direction: column;
-    gap: 2rem;
+    gap: 1rem;
 }
 
 .header {
@@ -72,25 +72,25 @@
     justify-content: space-between;
     align-items: flex-end;
     border-bottom: 4px solid var(--light-box-colour);
-    padding-bottom: 1rem;
+    padding-bottom: 0.5rem;
 }
 
 .title {
     font-family: 'Jersey 15', sans-serif;
     margin: 0;
-    font-size: 4rem;
+    font-size: 3rem;
     text-shadow: 2px 2px 0px var(--box-shadow-colour);
     color: var(--input-focus-colour);
 }
 
 .roomCode {
-    font-size: 2rem;
+    font-size: 1.6rem;
 }
 
 .splitLayout {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 3rem;
+    gap: 1.5rem;
 }
 
 @media (max-width: 768px) {
@@ -100,40 +100,153 @@
 }
 
 .panelTitle {
-    font-size: 3rem;
-    margin: 0 0 1.5rem 0;
+    font-size: 2.2rem;
+    margin: 0 0 0.5rem 0;
     font-family: 'Jersey 15', sans-serif;
     color: var(--input-focus-colour);
     text-shadow: 2px 2px 0px var(--box-shadow-colour);
 }
 
+/* LEFT & RIGHT FORM COLUMNS */
 .formStack {
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    gap: 0.75rem;
+}
+
+/* OVERVIEW SCROLLABLE BOX */
+.overviewScrollable {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    background: var(--box-secondary-colour);
+    padding: 0.5rem;
+    border: 4px solid var(--light-box-colour);
+    height: 340px;
+    box-sizing: border-box;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-colour) var(--box-secondary-colour);
+}
+
+.overviewScrollable::-webkit-scrollbar {
+    width: 10px;
+}
+
+.overviewScrollable::-webkit-scrollbar-track {
+    background: var(--box-secondary-colour);
+    border-left: 2px solid var(--light-box-colour);
+}
+
+.overviewScrollable::-webkit-scrollbar-thumb {
+    background: var(--border-colour);
+    border: 2px solid var(--box-secondary-colour);
+}
+
+.summaryRow {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--background-colour);
+    padding: 0.4rem 0.6rem;
+    border: 2px solid var(--light-box-colour);
+    font-size: 1.3rem;
+}
+
+.summaryKey {
+    color: var(--text-colour);
+}
+
+.summaryVal {
+    color: var(--input-focus-colour);
+}
+
+/* BOT ADDITION FORM STACK */
+.botFormStack {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    background: var(--box-secondary-colour);
+    padding: 0.75rem;
+    border: 4px solid var(--light-box-colour);
+    height: 340px;
+    box-sizing: border-box;
+}
+
+/* FULL CONFIGURATION SUBVIEW */
+.configContainer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.configColumns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+    align-items: start;
+}
+
+/* UNBOXED COLUMN CONTAINERS WITH CLEAN SCROLLBARS */
+.columnScrollContainer {
+    display: flex;
+    flex-direction: column;
+    height: 340px;
+    box-sizing: border-box;
+    overflow-y: auto;
+    padding-right: 0.5rem;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-colour) transparent;
+}
+
+.columnScrollContainer::-webkit-scrollbar {
+    width: 8px;
+}
+
+.columnScrollContainer::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.columnScrollContainer::-webkit-scrollbar-thumb {
+    background: var(--light-box-colour);
+}
+
+.columnGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.columnHeader {
+    font-family: 'Jersey 10', sans-serif;
+    font-size: 1.6rem;
+    color: var(--input-focus-colour);
+    border-bottom: 2px solid var(--light-box-colour);
+    padding-bottom: 0.25rem;
+    margin-bottom: 0.25rem;
+    text-shadow: 2px 2px 0px var(--box-shadow-colour);
 }
 
 .formGroup {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.25rem;
 }
 
 .formGroupRow {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 1rem;
+    gap: 0.75rem;
 }
 
 .formGroup label {
-    font-size: 1.5rem;
-    text-shadow: 2px 2px 0px var(--box-shadow-colour);
+    font-size: 1.3rem;
 }
 
 .inputOuter {
     width: 100%;
-    filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
+    filter: drop-shadow(2px 2px 0px var(--box-shadow-colour));
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
 }
@@ -143,8 +256,8 @@
 }
 
 .inputInner {
-    background: var(--box-secondary-colour);
-    padding: 0.75rem;
+    background: var(--box-colour);
+    padding: 0.5rem;
     display: flex;
     align-items: center;
 }
@@ -152,12 +265,13 @@
 .formControl {
     box-sizing: border-box;
     background: transparent;
-    font-size: 1.5rem;
+    font-size: 1.3rem;
     font-family: 'Jersey 10', sans-serif; 
     border: none;
     outline: none;
     width: 100%;
     padding: 0;
+    color: var(--text-colour);
 }
 
 select.formControl {
@@ -165,8 +279,8 @@ select.formControl {
     -webkit-appearance: none;
     background-image: url('data:image/svg+xml;utf8,<svg width="10" height="6" xmlns="http://www.w3.org/2000/svg"><path d="M0 0h10v2H8v2H6v2H4V4H2V2H0z" fill="%23FFFFFF"/></svg>');
     background-repeat: no-repeat;
-    background-position: right 1rem center;
-    padding-right: 3rem;
+    background-position: right 0.75rem center;
+    padding-right: 2.5rem;
     cursor: pointer;
 }
 
@@ -180,6 +294,7 @@ select.formControl option {
     background-color: var(--background-colour);
 }
 
+/* BUTTONS */
 .btnWrapper {
     box-sizing: border-box;
     background: transparent;
@@ -188,33 +303,33 @@ select.formControl option {
     cursor: pointer;
     width: 100%;
     transition: transform 0.1s;
-    filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
+    filter: drop-shadow(3px 3px 0px var(--box-shadow-colour));
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
 }
 
 .btnWrapper:hover:not(:disabled) {
     transform: translate(2px, 2px);
-    filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
+    filter: drop-shadow(1px 1px 0px var(--box-shadow-colour));
 }
 
 .btnWrapper:active:not(:disabled) {
-    transform: translate(4px, 4px);
+    transform: translate(3px, 3px);
     filter: drop-shadow(0px 0px 0px var(--box-shadow-colour));
 }
 
 .btnWrapper:disabled {
     cursor: not-allowed;
-    filter: drop-shadow(2px 2px 0px var(--box-shadow-colour));
-    transform: translate(4px, 4px);
-    opacity: 0.7;
+    filter: drop-shadow(1px 1px 0px var(--box-shadow-colour));
+    transform: translate(2px, 2px);
+    opacity: 0.8;
 }
 
 .btnInner {
     background: var(--button-colour);
-    padding: 1rem;
-    font-size: 1.8rem;
-    font-family: 'Jersey 10', sans-serif; 
+    padding: 0.5rem 0.75rem;
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', sans-serif;
     text-align: center;
     width: 100%;
     box-sizing: border-box;
@@ -237,17 +352,36 @@ select.formControl option {
 }
 
 .btnWrapper:hover:not(:disabled) .btnDanger {
-    background: var(--tertiary-button-hover-colour)
+    background: #ff5252;
 }
 
+/* SCROLLABLE PLAYER ROSTER */
 .playerList {
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
     background: var(--box-secondary-colour);
-    padding: 1rem;
+    padding: 0.5rem;
     border: 4px solid var(--light-box-colour);
-    min-height: 250px;
+    height: 340px;
+    box-sizing: border-box;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-colour) var(--box-secondary-colour);
+}
+
+.playerList::-webkit-scrollbar {
+    width: 10px;
+}
+
+.playerList::-webkit-scrollbar-track {
+    background: var(--box-secondary-colour);
+    border-left: 2px solid var(--light-box-colour);
+}
+
+.playerList::-webkit-scrollbar-thumb {
+    background: var(--border-colour);
+    border: 2px solid var(--box-secondary-colour);
 }
 
 .playerItem {
@@ -255,7 +389,7 @@ select.formControl option {
     justify-content: space-between;
     align-items: center;
     background: var(--background-colour);
-    padding: 0.75rem;
+    padding: 0.4rem 0.6rem;
     border: 2px solid var(--light-box-colour);
 }
 
@@ -265,17 +399,17 @@ select.formControl option {
 }
 
 .playerName {
-    font-size: 1.5rem;
+    font-size: 1.3rem;
 }
 
 .playerRole {
-    font-size: 1.2rem;
+    font-size: 1.1rem;
     color: var(--input-focus-colour);
 }
 
 .playerActions {
     display: flex;
-    gap: 0.5rem;
+    gap: 0.4rem;
 }
 
 .playerActions .btnWrapper {
@@ -283,12 +417,12 @@ select.formControl option {
 }
 
 .playerActions .btnInner {
-    padding: 0.25rem 0.75rem;
-    font-size: 1.2rem;
+    padding: 0.2rem 0.5rem;
+    font-size: 1.1rem;
 }
 
 .capacityBtn {
     color: var(--input-focus-colour);
-    font-size: 1.5rem;
-    padding: 0 0.5rem;
+    font-size: 1.3rem;
+    padding: 0 1rem;
 }

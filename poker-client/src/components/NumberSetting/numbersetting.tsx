@@ -16,8 +16,8 @@ export interface NumberSettingProps {
 }
 
 export const NumberSetting = ({ 
-    label, 
-    range, 
+    label = '', 
+    range = '', 
     value, 
     min, 
     max, 
@@ -64,9 +64,11 @@ export const NumberSetting = ({
 
     return (
         <div className={styles.formGroup} style={{ flex: 1 }}>
-            <label>
-                {label} <span style={{ fontFamily: '"Tiny5", sans-serif', fontSize: '0.6em', opacity: 0.8 }}>({range})</span>
-            </label>
+            {label !== '' &&
+                <label>
+                    {label} { range !== '' && <span style={{ fontFamily: '"Tiny5", sans-serif', fontSize: '0.6em', opacity: 0.8 }}>({range})</span> }
+                </label>
+            }
             <div className={styles.inputOuter}>
                 <PixelBox innerClassName={`${styles.inputInner} ${styles.capacityInner}`} borderColour={boxBorderColour}>
                     {!disabled && (
