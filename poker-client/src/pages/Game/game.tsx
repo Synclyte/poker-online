@@ -119,6 +119,7 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ cardStr, deckRef }) => {
     const [isDealing, setIsDealing] = useState<boolean>(true);
     const isInitiallyDealt = useRef<boolean>(false);
 
+    const isJoker = cardStr?.startsWith("*") || false;
     const parsed = parseCardString(cardStr || "");
     const shouldBeRevealed = Boolean(cardStr && !parsed.isHidden);
 
@@ -166,7 +167,7 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ cardStr, deckRef }) => {
 
     return (
         <div ref={slotRef} className={styles.cardSlot}>
-            {cardStr && (
+            {cardStr && dealOffset && (
                 <div 
                     className={dealOffset ? styles.dealtCard : ''}
                     style={{
@@ -178,10 +179,22 @@ const PlayingCard: React.FC<PlayingCardProps> = ({ cardStr, deckRef }) => {
                 >
                     <div className={`${styles.cardInner} ${isFlipped ? styles.cardFlipped : ''}`}>
                         <div className={styles.cardBackFace} />
-                        <div className={styles.cardFront} style={{ color: parsed.color }}>
-                            <span>{parsed.rank}</span>
-                            <img src={`/src/assets/${parsed.suitSymbol}.png`} alt={parsed.suitSymbol} />
-                        </div>
+                        {!isJoker && (
+                            <div className={styles.cardFront} style={{ color: parsed.color }}>
+                                <span>{parsed.rank}</span>
+                                <img src={`/src/assets/${parsed.suitSymbol}.png`} alt={parsed.suitSymbol} />
+                            </div>
+                        )}
+                        {isJoker && (
+                            <div className={`${styles.cardFront} ${styles.joker}`} style={{ color: '#000000' }}>
+                                <span style={{ transform: 'rotate(90deg)', left: '-10px', top: '15px', position: 'absolute'}}>Joker</span>
+                                <span style={{ transform: 'rotate(270deg)', right: '-10px', bottom: '15px', position: 'absolute'}}>Joker</span>
+                                <img src={`/src/assets/heartsmall.png`} />
+                                <img src={`/src/assets/spadesmall.png`} />
+                                <img src={`/src/assets/diamondsmall.png`} />
+                                <img src={`/src/assets/clubsmall.png`} />
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -208,6 +221,8 @@ export function Game() {
     const chipImageOne = useRef<HTMLImageElement | null>(null);
     const chipImageTen = useRef<HTMLImageElement | null>(null);
     const chipImageFifty = useRef<HTMLImageElement | null>(null);
+    const chipImageTwoHundred = useRef<HTMLImageElement | null>(null);
+    const chipImageOneThousand = useRef<HTMLImageElement | null>(null);
     const chipImageDict = useRef<{ [key: number]: ChipImageInfo}>(null);
 
     const seatRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
@@ -229,17 +244,33 @@ export function Game() {
     const imageDict = {
         1: { ref: chipImageOne, size: 24 },
         10: { ref: chipImageTen, size: 32 },
-        50: { ref: chipImageFifty, size: 52 }
+        50: { ref: chipImageFifty, size: 52 },
+        200: { ref: chipImageTwoHundred, size: 64 },
+        1000: { ref: chipImageOneThousand, size: 80 },
     }
     const getChipCounts = (rawAmount: number) => {
-        let fifties = Math.max(0, Math.floor((rawAmount - 150) / 65));
-        let tens = Math.floor((rawAmount - fifties * 50) / 10);
-        let ones = rawAmount - fifties * 50 - tens * 10;
+        let remainingChips = rawAmount;
+
+        let oneThousands = Math.max(0, Math.floor((remainingChips - 7500) / Math.max(1000, 1250 - rawAmount / 250)));
+        remainingChips -= oneThousands * 1000;
+
+        let twohundreds = Math.max(0, Math.floor((remainingChips - 1500) / Math.max(200, 250 - rawAmount / 200)));
+        remainingChips -= twohundreds * 200;
+
+        let fifties = Math.max(0, Math.floor((remainingChips - 150) / Math.max(50, 70 - rawAmount / 75)));
+        remainingChips -= fifties * 50;
+
+        let tens = Math.floor(remainingChips / 10);
+        remainingChips -= tens * 10;
+
+        let ones = remainingChips;
 
         return {
             1: ones,
             10: tens,
-            50: fifties
+            50: fifties,
+            200: twohundreds,
+            1000: oneThousands,
         }
     }
     const loadImg = (ref: React.RefObject<HTMLImageElement | null>, src: string) => {
@@ -253,6 +284,8 @@ export function Game() {
         loadImg(chipImageOne, '/src/assets/chip1.png');
         loadImg(chipImageTen, '/src/assets/chip10.png');
         loadImg(chipImageFifty, '/src/assets/chip50.png');
+        loadImg(chipImageTwoHundred, '/src/assets/chip200.png');
+        loadImg(chipImageOneThousand, '/src/assets/chip1000.png');
         chipImageDict.current = imageDict;
     }, []);
 
@@ -284,6 +317,10 @@ export function Game() {
             // draw chip particle
             const imgDict = chipImageDict.current;
             if (!imgDict) return;
+
+            // ensures higher denomination chips render over lower denominations
+            activeParticlesRef.current.sort((a, b) => b.type - a.type);
+
             const particles = activeParticlesRef.current;
             for (let i = particles.length - 1; i >= 0; i--) {
                 const p = particles[i];
@@ -302,10 +339,10 @@ export function Game() {
                 // progress-based chip scaling - chips initially grow, maintain size, and shrink as they
                 // are absorbed. absorbing given more time due to ease function
                 let currentScale = 1;
-                if (progress < 0.15) {
-                    currentScale = (1 / 0.15) * progress;
-                } else if (progress > 0.75) {
-                    currentScale = 1 - (1 / 0.25) * (progress - 0.75);
+                if (progress < 0.2) {
+                    currentScale = (1 / 0.2) * progress;
+                } else if (progress > 0.7) {
+                    currentScale = 1 - (1 / 0.3) * (progress - 0.7);
                 }
                 const chipSize = chipImg.size * currentScale;
 
@@ -373,8 +410,8 @@ export function Game() {
 
         const addChips = (type: number, count: number) => {
             for (let i = 0; i < count; i++) {
-                const jitterX = (Math.random() - 0.5) * Math.max(chipDelay * 1.5, 50);
-                const jitterY = (Math.random() - 0.5) * Math.max(chipDelay * 1.5, 50);
+                const jitterX = (Math.random() - 0.5) * Math.min(chipDelay ** 1.5, 80);
+                const jitterY = (Math.random() - 0.5) * Math.min(chipDelay ** 1.5, 80);
 
                 activeParticlesRef.current.push({
                     x: startX + jitterX,
@@ -615,34 +652,32 @@ export function Game() {
                 <canvas ref={canvasRef} className={styles.chipCanvas} />
 
                 {gameState?.round_name !== "room" && (
-                    <div className={styles.deckStack} id='deck'>
-                        {/* handles making the deck stack - height varies with card count */}
-                        {(() => {
-                            const remainingCards = gameState?.deck_cards ?? 52;
-                            const layerCount = Math.max(1, Math.ceil(remainingCards / 4));
-
-                            return Array.from({ length: layerCount }).map((_, i) => {
-                                const offsetPx = -i * 2;
-                                const isTopCard = i === layerCount - 1;
-
-                                return (
-                                    <div
-                                        key={`deck-layer-${i}`}
-                                        ref={isTopCard ? deckRef : null}
-                                        className={styles.deckCardLayer}
-                                        style={{
-                                            transform: `translateY(${offsetPx}px)`,
-                                            zIndex: i + 1,
-                                        }}
-                                    />
-                                );
-                            });
-                        })()}
-                    </div>
-                )}
-
-                {gameState?.round_name !== "room" && (
                     <div className={styles.centerBoard}>
+                        <div className={styles.deckStack}>
+                            {/* handles making the deck stack - height varies with card count */}
+                            {(() => {
+                                const remainingCards = gameState?.deck_cards ?? 52;
+                                const layerCount = Math.max(1, Math.ceil(remainingCards / 4));
+
+                                return Array.from({ length: layerCount }).map((_, i) => {
+                                    const offsetPx = -i * 2;
+                                    const isTopCard = i === layerCount - 1;
+
+                                    return (
+                                        <div
+                                            key={`deck-layer-${i}`}
+                                            ref={isTopCard ? deckRef : null}
+                                            className={styles.deckCardLayer}
+                                            style={{
+                                                transform: `translateY(${offsetPx}px)`,
+                                                zIndex: i + 1,
+                                            }}
+                                        />
+                                    );
+                                });
+                            })()}
+                        </div>
+
                         <div className={styles.potDisplay} ref={potRef}>
                             Pot: <strong>{gameState?.overall_sum || 0}</strong>
                         </div>

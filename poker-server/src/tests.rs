@@ -1,0 +1,499 @@
+/**
+ * Contains tests for modules
+ */
+
+#[cfg(test)]
+mod tests {
+    #[cfg(test)]
+    mod special_tests {}
+
+    #[cfg(test)]
+    mod game_tests {
+        use crate::Action::Raise;
+        use crate::ai::AIType;
+        use crate::{Action, DeckType, Game, GameConfig, PlayerType, Round, SpecialCard};
+        use crate::poker::*;
+
+        fn get_configured_started_game(player_count: usize, bot_count: usize) -> Game {
+            let mut game = Game::new();
+            let _ = game.update_config(create_valid_config(player_count, bot_count));
+            let _ = game.initialise();
+            let _ = game.start();
+
+            game
+        }
+
+        fn create_valid_config(player_count: usize, bot_count: usize) -> GameConfig {
+            let bots: Vec<AIType> = (0..bot_count).map(|_| AIType::Smart).collect();
+            GameConfig { 
+                player_count, 
+                bots, 
+                rng_seed: 0, 
+                blind_size: 20, 
+                min_raise: 10, 
+                starting_chips: 1000, 
+                special_card_limit: 3, 
+                deck_type: DeckType::Standard, 
+                max_players: player_count + bot_count, 
+                round_limit: 30  
+            }
+        }
+
+        fn first_hand_beats_second_hand(first_hand: Vec<ExpandedCard>, second_hand: Vec<ExpandedCard>) -> bool {
+            let mut game = get_configured_started_game(2, 0);
+
+            let (p1_id, p2_id) = (game.players[0].id as i32, game.players[1].id as i32);
+
+            // preflop
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            // flop
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            // river
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            // turn
+            game.community.clear();
+
+            let p1_idx = game.get_player_index(p1_id as usize).unwrap();
+            game.players[p1_idx].cards = first_hand;
+
+            let p2_idx = game.get_player_index(p2_id as usize).unwrap();
+            game.players[p2_idx].cards = second_hand;
+
+            make_move_and_end_turn(Action::Raise(i32::MAX), game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Action::Raise(i32::MAX), game.players[game.turn_index].id, &mut game);
+
+            game.players[p1_idx].chips == game.ctx.starting_chips * 2 && game.players[p2_idx].chips == 0
+        }
+
+        fn make_move_and_end_turn(player_move: Action, player_id: usize, game: &mut Game) {
+            let _ = game.player_move(player_id, player_move);
+            let _ = game.player_move(player_id, Action::EndMove);
+        }
+
+        #[test]
+        fn test_player_count_cannot_exceed_max() {
+            let mut game = Game::new();
+            let config = GameConfig {
+                player_count: 5,
+                bots: vec![],
+                rng_seed: 0,
+                blind_size: 20,
+                min_raise: 10,
+                starting_chips: 1000,
+                deck_type: DeckType::Standard,
+                max_players: 4,
+                special_card_limit: 3,
+                round_limit: 30,
+            };
+
+            let err = game.update_config(config);
+            assert!(err.is_err());
+        }
+
+        #[test]
+        fn test_game_creation_and_config_update() {
+            let mut game = Game::new();
+            assert_eq!(game.round, Round::Room);
+
+            let config = create_valid_config(2, 0);
+            let err = game.update_config(config);
+            assert!(err.is_ok());
+        }
+
+        #[test]
+        fn test_initialise_transition() {
+            let mut game = Game::new();
+            let _ = game.update_config(create_valid_config(2, 2));
+
+            let _ =game.initialise();
+            assert_eq!(game.round, Round::Preround);
+
+            let state = game.get_game_state(0);
+            let players = state.players;
+
+            assert_eq!(players.len(), 4);
+            for player in players {
+                assert_eq!(player.chips, 1000);
+                assert_eq!(player.folded, false);
+            }
+        }
+
+        #[test]
+        fn test_round_transition_from_preround_to_preflop() {
+            let game = get_configured_started_game(2, 0);
+
+            let state = game.get_game_state(0);
+            let players = state.players;
+
+            // players should have received their hole cards
+            assert_eq!(players[0].hole_cards.len(), 2);
+            assert_eq!(players[1].hole_cards.len(), 2);
+
+            // and should have paid blinds
+            assert_eq!(players[0].total_bet, 10, "Expected total bet to be 10 (small blind), was {}", players[0].total_bet);
+            assert_eq!(players[1].total_bet, 20, "Expected total bet to be 20 (big blind), was {}", players[1].total_bet);
+        }
+
+        #[test]
+        fn test_player_moves_and_turn_rotation() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let active_player = game.get_current_turn_player_id();
+            
+            let _ = game.player_move(active_player, Action::Call);
+            
+            let state = game.get_game_state(active_player as usize);
+            assert_eq!(state.highest_bet, 20);
+        }
+
+        #[test]
+        fn test_bot_execution_without_panic() {
+            // 1 human, 1 bot
+            let mut game = get_configured_started_game(1, 1);
+
+            let human_id = game.players.iter().find(|p| match p.player_type {
+                PlayerType::Human => true,
+                _ => false
+            }).map(|p| p.id).unwrap_or(0);
+
+            // make a move if it is currently the player's turn
+            if game.get_current_turn_player_id() == human_id {
+                let _ = game.player_move(human_id, Action::Call);
+            }
+
+            assert!(matches!(game.round, Round::Preflop | Round::Flop));
+        }
+
+        #[test]
+        fn test_midgame_add_and_remove_player() {
+            let mut game = get_configured_started_game(2, 0);
+            
+            let add_res_str = game.try_add_player(PlayerType::Human);
+            assert!(add_res_str.is_err(), "Adding player mid-hand should fail");
+        }
+
+        #[test]
+        fn test_game_ends_after_no_humans_remain() {
+            let mut game = get_configured_started_game(1, 1);
+
+            let human_id = game.players.iter().find(|p| match p.player_type {
+                PlayerType::Human => true,
+                _ => false
+            }).map(|p| p.id).unwrap_or(0);
+
+            let _ = game.player_move(human_id, Action::Fold);
+
+            assert_eq!(game.round, Round::Showdown, "Expected round to end after last human player folded, instead round is {}", game.round);
+        }
+
+        #[test]
+        fn test_game_round_progresses_after_moves() {
+            let mut game = get_configured_started_game(2, 0);
+
+            assert_eq!(game.round, Round::Preflop, "Game round expected to be Preflop, actual: {}", game.round);
+
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+
+            assert_eq!(game.round, Round::Flop, "Game round expected to be Flop, actual: {}", game.round);
+        }
+
+        #[test]
+        fn test_complex_pot_paid_correctly() {
+            let mut game = Game::new();
+            _ = game.update_config(create_valid_config(3, 0));
+            _ = game.initialise();
+
+            let (p1_id, p2_id, p3_id) = (game.players[0].id, game.players[1].id, game.players[2].id);
+            game.players[0].chips = 200;
+            game.players[1].chips = 500;
+            game.players[2].chips = 1000;
+
+            _ = game.start();
+
+            // p1 has 4 aces (wins overall round)
+            game.players[0].cards = vec![
+                ExpandedCard::get_card("a", "s"), 
+                ExpandedCard::get_card("a", "s"), 
+                ExpandedCard::get_card("a", "s"), 
+                ExpandedCard::get_card("a", "s")
+            ];
+            // p2 has 4 kings (second)
+            game.players[1].cards = vec![
+                ExpandedCard::get_card("k", "s"), 
+                ExpandedCard::get_card("k", "s"), 
+                ExpandedCard::get_card("k", "s"), 
+                ExpandedCard::get_card("k", "s")
+            ];
+            // p3 has 4 queens (loses)
+            game.players[2].cards = vec![
+                ExpandedCard::get_card("q", "s"), 
+                ExpandedCard::get_card("q", "s"), 
+                ExpandedCard::get_card("q", "s"), 
+                ExpandedCard::get_card("q", "s")
+            ];
+
+            // all players go all in
+            make_move_and_end_turn(Raise(10000), p1_id, &mut game);
+            make_move_and_end_turn(Raise(10000), p2_id, &mut game);
+            make_move_and_end_turn(Raise(10000), p3_id, &mut game);
+
+            // p1 has 600 chips at the end (200 from p1, p2, and p3)
+            assert_eq!(game.players[0].chips, 600, "Expected P1 to have 600 chips. Instead P1: {}, P2: {}, P3: {}", game.players[0].chips, game.players[1].chips, game.players[2].chips);
+
+            // p2 has 600 chips at the end (300 from p2, and p3)
+            assert_eq!(game.players[1].chips, 600, "Expected P2 to have 600 chips. Instead P1: {}, P2: {}, P3: {}", game.players[0].chips, game.players[1].chips, game.players[2].chips);
+
+            // p3 has 500 chips at the end (lost 200 to p1, 300 to p2)
+            assert_eq!(game.players[2].chips, 500);
+        }
+
+        #[test]
+        fn test_full_house_beats_flush() {
+            // full house of king/10
+            let first_hand = vec![
+                ExpandedCard::get_card("k", "d"), 
+                ExpandedCard::get_card("k", "s"), 
+                ExpandedCard::get_card("k", "c"), 
+                ExpandedCard::get_card("10", "s"), 
+                ExpandedCard::get_card("10", "h")
+            ];
+
+            // flush, ace high
+            let second_hand = vec![
+                ExpandedCard::get_card("a", "h"), 
+                ExpandedCard::get_card("q", "h"), 
+                ExpandedCard::get_card("j", "h"), 
+                ExpandedCard::get_card("9", "h"), 
+                ExpandedCard::get_card("7", "h")
+            ];
+
+            assert!(first_hand_beats_second_hand(first_hand, second_hand))
+        }
+
+        #[test]
+        fn test_high_flush_beats_low_flush() {
+            // flush, ace high
+            let first_hand = vec![
+                ExpandedCard::get_card("a", "h"), 
+                ExpandedCard::get_card("q", "h"), 
+                ExpandedCard::get_card("j", "h"), 
+                ExpandedCard::get_card("9", "h"), 
+                ExpandedCard::get_card("7", "h")
+            ];
+
+            // flush, king high
+            let second_hand = vec![
+                ExpandedCard::get_card("k", "d"), 
+                ExpandedCard::get_card("j", "d"), 
+                ExpandedCard::get_card("10", "d"), 
+                ExpandedCard::get_card("8", "d"), 
+                ExpandedCard::get_card("7", "d")
+            ];
+
+            assert!(first_hand_beats_second_hand(first_hand, second_hand))
+        }
+
+        #[test]
+        fn test_better_2pair_kickers_win() {
+            // two pair, king+9 with jack kicker
+            let first_hand = vec![
+                ExpandedCard::get_card("k", "d"), 
+                ExpandedCard::get_card("k", "s"), 
+                ExpandedCard::get_card("9", "h"), 
+                ExpandedCard::get_card("9", "c"), 
+                ExpandedCard::get_card("j", "c")
+            ];
+
+            // two pair, king+9 with 8 kicker
+            let second_hand = vec![
+                ExpandedCard::get_card("k", "d"), 
+                ExpandedCard::get_card("k", "s"), 
+                ExpandedCard::get_card("9", "h"), 
+                ExpandedCard::get_card("9", "c"), 
+                ExpandedCard::get_card("8", "d")
+            ];
+
+            assert!(first_hand_beats_second_hand(first_hand, second_hand))
+        }
+
+        #[test]
+        fn test_ace_low_straight_detected() {
+            let mut game = Game::new();
+            let _ = game.update_config(create_valid_config(2, 0));
+
+            let cards = vec![
+                ExpandedCard::get_card("a", "d"), 
+                ExpandedCard::get_card("2", "d"), 
+                ExpandedCard::get_card("3", "d"), 
+                ExpandedCard::get_card("4", "d"), 
+                ExpandedCard::get_card("5", "d")
+            ];
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+
+            assert_eq!(hand.hand_type, HandType::StraightFlush);
+        }
+
+        #[test]
+        fn test_ace_high_straight_detected() {
+            let mut game = Game::new();
+            let _ = game.update_config(create_valid_config(2, 0));
+        
+            let cards = vec![
+                ExpandedCard::get_card("a", "d"), 
+                ExpandedCard::get_card("k", "d"), 
+                ExpandedCard::get_card("q", "d"), 
+                ExpandedCard::get_card("j", "d"), 
+                ExpandedCard::get_card("10", "d")
+            ];
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+
+            assert_eq!(hand.hand_type, HandType::RoyalFlush);
+        }    
+
+        #[test]
+        fn test_4oak_detected() {
+            let mut game = Game::new();
+            let _ = game.update_config(create_valid_config(2, 0));
+
+            let cards = vec![
+                ExpandedCard::get_card("a", "d"), 
+                ExpandedCard::get_card("a", "s"), 
+                ExpandedCard::get_card("a", "c"), 
+                ExpandedCard::get_card("a", "h")
+                ];
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+
+            assert_eq!(hand.hand_type, HandType::FourOfAKind);
+        }
+
+        #[test]
+        fn test_flush_detected() {
+            let mut game = Game::new();
+            let _ = game.update_config(create_valid_config(2, 0));
+        
+            let cards = vec![
+                ExpandedCard::get_card("a", "d"), 
+                ExpandedCard::get_card("3", "d"), 
+                ExpandedCard::get_card("5", "d"), 
+                ExpandedCard::get_card("7", "d"), 
+                ExpandedCard::get_card("9", "d")
+            ];
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+
+            assert_eq!(hand.hand_type, HandType::Flush);
+        }
+
+        #[test]
+        fn test_turn_remains_active_when_player_holds_special_cards() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let active_player_id = game.get_current_turn_player_id();
+            let active_idx = game.get_player_index(active_player_id as usize).unwrap();
+
+            // gives current player a special card
+            game.players[active_idx].special_cards.push(SpecialCard::ChipBoost);
+
+            // player calls while holding special card
+            let _ = game.player_move(active_player_id, Action::Call);
+
+            assert_eq!(game.get_current_turn_player_id(), active_player_id, "Turn should remain on current player while they hold special cards");
+            assert_eq!(game.players[active_idx].acted, true);
+
+            // turn should stay active until explicitly ended
+            let _ = game.player_move(active_player_id, Action::EndMove);
+            assert_ne!(game.get_current_turn_player_id(), active_player_id, "Turn should pass after playing ENDMOVE");
+        }
+
+        #[test]
+        fn test_turn_advances_automatically_when_player_has_no_special_cards() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let p1_id = game.get_current_turn_player_id();
+            let p1_idx = game.get_player_index(p1_id as usize).unwrap();
+
+            // player has no special cards
+            game.players[p1_idx].special_cards.clear();
+            let _ = game.player_move(p1_id, Action::Call);
+
+            assert_ne!(game.get_current_turn_player_id(), p1_id, "Turn should automatically advance to next player when no special cards are held");
+        }
+
+        #[test]
+        fn test_turn_advances_immediately_on_fold_even_with_special_cards() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let active_player_id = game.get_current_turn_player_id();
+            let active_idx = game.get_player_index(active_player_id as usize).unwrap();
+
+            // gives the current player a special card
+            game.players[active_idx].special_cards.push(SpecialCard::ChipBoost);
+            let _ = game.player_move(active_player_id, Action::Fold);
+
+            assert_eq!(game.players[active_idx].folded, true);
+            assert_ne!(game.get_current_turn_player_id(), active_player_id, "Folding must immediately yield turn even if special cards remain");
+        }
+
+        #[test]
+        fn test_playing_special_card_consumes_card_and_keeps_turn() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let p1_id = game.get_current_turn_player_id();
+            let p1_idx = game.get_player_index(p1_id as usize).unwrap();
+
+            game.players[p1_idx].special_cards.push(SpecialCard::ChipBoost);
+
+            // play owned special card
+            let _ = game.player_move(p1_id, Action::PlaySpecial { card: SpecialCard::ChipBoost, target_id: None, card_index: None });
+
+            assert!(game.players[p1_idx].special_cards.is_empty());
+            assert_eq!(game.get_current_turn_player_id(), p1_id, "turn should not change after playing special card");
+        }
+
+        #[test]
+        fn test_special_card_block_prevents_play_and_allows_turn_auto_completion() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let p1_id = game.get_current_turn_player_id();
+            let p1_idx = game.get_player_index(p1_id as usize).unwrap();
+
+            // player plays special block card
+            game.players[p1_idx].special_cards.push(SpecialCard::SpecialBlock);
+            let _ = game.player_move(p1_id, Action::PlaySpecial { card: SpecialCard::SpecialBlock, target_id: None, card_index: None });
+            make_move_and_end_turn(Action::Call, p1_id, &mut game);
+
+            let p2_id = game.get_current_turn_player_id();
+            let p2_idx = game.get_player_index(p2_id as usize).unwrap();
+
+            // second player attempts to play special card
+            game.players[p2_idx].special_cards.push(SpecialCard::ChipBoost);
+            let result = game.player_move(p2_id, Action::PlaySpecial { card: SpecialCard::ChipBoost, target_id: None, card_index: None });
+            assert!(result.is_err());
+
+            let _ = game.player_move(p2_id, Action::Call);
+            assert_ne!(game.get_current_turn_player_id(), p2_id, "Turn should auto-complete when special cards are blocked");
+        }
+
+        #[test]
+        fn invalid_special_card_index_returns_error() {
+            let mut game = get_configured_started_game(2, 0);
+            let player_id = game.get_current_turn_player_id();
+            let player_index = game.get_player_index(player_id as usize).unwrap();
+
+            game.players[player_index].special_cards.push(SpecialCard::ReplaceCardSelf);
+
+            let before = game.players[player_index].cards.clone();
+            let result = game.player_move(
+                player_id,
+                Action::PlaySpecial { card: SpecialCard::ReplaceCardSelf, target_id: None, card_index: Some(999) },
+            );
+
+            assert!(result.is_err());
+            assert_eq!(game.players[player_index].cards, before);
+            assert!(game.players[player_index].special_cards.contains(&SpecialCard::ReplaceCardSelf));
+        }
+    }
+}
