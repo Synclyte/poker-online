@@ -7,6 +7,7 @@ interface PixelBoxProps extends React.HTMLAttributes<HTMLDivElement> {
     backgroundColour?: string;
     className?: string;
     innerClassName?: string;
+    unclipped?: boolean;
 }
 
 export function PixelBox({ 
@@ -15,8 +16,28 @@ export function PixelBox({
     backgroundColour = '',
     className = '', 
     innerClassName = '',
+    unclipped = false,
     ...props 
 }: PixelBoxProps) {
+    if (unclipped) {
+        return (
+            <div 
+                className={`${styles.wrapper} ${styles.unclippedWrapper} ${className}`}
+                style={{ 
+                    '--pixel-border-color': borderColour,
+                    '--pixel-bg': backgroundColour
+                } as React.CSSProperties}
+                {...props}
+            >
+                <div className={styles.borderBg} />
+                <div className={styles.innerBg} />
+                <div className={`${styles.inner} ${styles.unclippedInner} ${innerClassName}`}>
+                    {children}
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div 
             className={`${styles.wrapper} ${className}`}
@@ -26,6 +47,8 @@ export function PixelBox({
             } as React.CSSProperties}
             {...props}
         >
+            <div className={styles.borderBg} />
+            <div className={styles.innerBg} />
             <div className={`${styles.inner} ${innerClassName}`}>
                 {children}
             </div>

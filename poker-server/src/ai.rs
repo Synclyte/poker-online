@@ -52,11 +52,12 @@ impl AI {
     /**
      * Uses a non-deterministic decision tree to select an Action based on the current game state, cards, and AI preset parameters
      */
-    pub(crate) fn calculate_next_action(&mut self, player_index: usize, game: &mut Game) -> Action {
+    pub(crate) fn calculate_next_action(&mut self, player_index: usize, game: &mut Game) -> Vec<Action> {
         // there are two primary situations a player can face:
         //  - the game bet is equal to what they have bet
         //  - the game bet is greater than what they have bet
 
+        let mut actions: Vec<Action> = Vec::new();
         let player = &game.players[player_index].clone();
 
         let fear_greed_sum = self.fear + self.greed;
@@ -68,8 +69,8 @@ impl AI {
             self.budget = self.calculate_round_budget(player, game, hand_strength);
         }
 
-        if game.bet > player.total_bet {
-            let new_total = self.total_bet + game.bet - player.total_bet;
+        if game.bet > player.round_bet {
+            let new_total = self.total_bet + game.bet - player.round_bet;
             if new_total > self.budget {
                 let calibration = (game.ctx.blind_size.max(1) * 3) as f64;
                 let denominator = (self.budget as f64 + calibration).max(1.0);
@@ -92,34 +93,42 @@ impl AI {
                 };
 
                 if game.ctx.rng.random_bool(p_fold) {
-                    return Action::Fold;
+                    actions.push(Action::Fold);
                 } else if game.ctx.rng.random_bool(p_call) {
-                    self.total_bet += (game.bet - player.total_bet).min(player.chips);
+                    self.total_bet += (game.bet - player.round_bet).min(player.chips);
                     self.budget = self.calculate_round_budget(player, game, hand_strength);
-                    return Action::Call;
+                    actions.push(Action::Call);
                 } else {
+                    let min_r = game.ctx.min_raise.min(player.chips);
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.1 * self.greed * player.chips as f64) as i32;
-                    let adjusted_raise = raise_amount.min(player.chips);
-                    self.total_bet += adjusted_raise + (game.bet - player.total_bet).min(player.chips);
+                    let adjusted_raise = raise_amount.max(min_r).min(player.chips);
+                    self.total_bet += adjusted_raise + (game.bet - player.round_bet).min(player.chips);
                     let upper_budget = player.chips.max(1);
                     self.budget = self.calculate_round_budget(player, game, hand_strength).clamp((self.budget + raise_amount).min(upper_budget), upper_budget);
-                    return Action::Raise(adjusted_raise);
+                    actions.push(Action::Raise { amount: adjusted_raise });
                 }
             } else {
-                return Action::Call;
+                actions.push(Action::Call);
             }
         } else {
             let budget_used = if self.budget > 0 { (self.total_bet as f64 / self.budget as f64).clamp(0.0, 1.0) } else { 0.0 };
             let p_raise = (fear_greed_ratio * hand_strength * 2.0 * (1.0 - budget_used)).clamp(0.0, 1.0);
 
             if !p_raise.is_nan() && game.ctx.rng.random_bool(p_raise) {
+                let min_r = game.ctx.min_raise.min(player.chips);
                 let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
-                let adjusted_raise = raise_amount.min(self.budget - self.total_bet).min(player.chips);
-                return Action::Raise(adjusted_raise);
-            } 
-
-            Action::Call
+                let adjusted_raise = raise_amount.max(min_r).min(self.budget - self.total_bet).min(player.chips);
+                if adjusted_raise >= min_r {
+                    actions.push(Action::Raise { amount: adjusted_raise });
+                } else {
+                    actions.push(Action::Call);
+                }
+            } else {
+                actions.push(Action::Call);
+            }
         }
+
+        actions
     }
 
     fn calculate_round_budget(&self, player: &Player, game: &mut Game, hand_strength: f64) -> i32 {

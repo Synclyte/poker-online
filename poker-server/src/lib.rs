@@ -13,6 +13,7 @@ use poker::*;
 use special::*;
 use ai::*;
 
+use std::collections::HashSet;
 use std::fmt::{self, Debug};
 use serde::{Serialize, Deserialize};
 use rand::{SeedableRng, seq::{SliceRandom}};
@@ -20,7 +21,7 @@ use rand_chacha::ChaCha12Rng;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GameError {
-    InvalidConfig,
+    InvalidConfig(String),
     ConfigLocked,
     InvalidRound,
     InvalidTurn,
@@ -38,11 +39,13 @@ pub enum GameError {
     CardIndexInvalid,
     TurnEndedBeforeAction,
     SpecialCardsFull,
+    DuplicateConfigID,
+    PrimaryMoveAlreadyMade,
 }
 impl fmt::Display for GameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Self::InvalidConfig => "Failed to parse given config",
+            Self::InvalidConfig(reason) => return write!(f, "Failed to parse given config: {}", reason),
             Self::ConfigLocked => "Failed to apply config: round has already started",
             Self::InvalidRound => "Action is not valid in the current round",
             Self::InvalidTurn => "Invalid turn order",
@@ -60,6 +63,8 @@ impl fmt::Display for GameError {
             Self::CardIndexInvalid => "Card index is out of range",
             Self::TurnEndedBeforeAction => "Must act before ending move",
             Self::SpecialCardsFull => "Could not deal special card: already full",
+            Self::DuplicateConfigID => "Provided configuration contained duplicate user IDs",
+            Self::PrimaryMoveAlreadyMade => "Already performed primary action",
         };
 
         f.write_str(message)
@@ -131,18 +136,25 @@ impl Player {
     }
 }
 
+#[derive(Serialize, Clone)]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum Action {
-    Raise(i32),
+    Raise { amount: i32 },
     Fold,
     Call,
     Timeout,
     EndMove,
-    PlaySpecial { card: SpecialCard, target_id: Option<usize>, card_index: Option<usize> },
+    PlaySpecial { 
+        card: SpecialCard, 
+        target_id: Option<usize>, 
+        card_index: Option<usize> 
+    },
+    DiscardSpecial { card_index: usize },
 }
 impl fmt::Display for Action {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Action::Raise(n) => return write!(f, "RAISE {}", n),
+            Action::Raise { amount } => return write!(f, "RAISE {}", amount),
             Action::Fold => "FOLD",
             Action::Call => "CALL",
             Action::Timeout => "TIMEOUT",
@@ -152,6 +164,7 @@ impl fmt::Display for Action {
                 target_id, 
                 card_index 
             } => return write!(f, "SPECIAL {} {} {}", card, target_id.unwrap_or(0), card_index.unwrap_or(0)),
+            Action::DiscardSpecial { card_index } => return write!(f, "DISCARD {}", card_index),
         };
 
         f.write_str(message)
@@ -159,7 +172,7 @@ impl fmt::Display for Action {
 }
 
 impl Action {
-    fn from_str(action: String) -> Option<Self> {
+    fn from_str(action: &str) -> Option<Self> {
         let action_args: Vec<&str> = action.split(' ').collect();
         match action_args[0].to_lowercase().as_str() {
             "raise" => {
@@ -168,7 +181,7 @@ impl Action {
                 if amount <= 0 { 
                     None 
                 } else {
-                    Some(Action::Raise(amount))
+                    Some(Action::Raise { amount } )
                 }
             }
             "fold" => Some(Action::Fold),
@@ -183,6 +196,11 @@ impl Action {
                 
                 Some(Action::PlaySpecial { card, target_id, card_index })
             },
+            "discardspecial" => {
+                let index = action_args.get(1).and_then(|s| s.parse::<usize>().ok())?;
+
+                Some(Action::DiscardSpecial { card_index: index })
+            }
             _ => None,
         }
     }
@@ -217,6 +235,7 @@ impl fmt::Display for Round {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DeckType {
     Standard,
     Half,
@@ -240,7 +259,7 @@ impl DeckType {
     /**
      * Gets a custom deck, with contents depending on the provided string
      */
-    pub fn get_associated_deck(self) -> Vec<ExpandedCard> {
+    pub(crate) fn get_associated_deck(self) -> Vec<ExpandedCard> {
         match self {
             DeckType::Restricted => Self::get_deck(0, Some(
                 |c| c.card().rank as usize >= 5
@@ -255,7 +274,7 @@ impl DeckType {
             )),
             DeckType::JokerStandard => Self::get_deck(1, None),
             DeckType::TwoJokerStandard => Self::get_deck(2, None),
-            DeckType::Standard | _ => Self::get_deck(0, None),
+            _ => Self::get_deck(0, None),
         }
     }
 
@@ -298,7 +317,7 @@ impl GameContext {
         rng: ChaCha12Rng, 
         mut permitted_hands: Vec<HandType>, 
         blind_size: i32, 
-        min_raise:i32, 
+        min_raise: i32, 
         starting_chips: i32,
         special_card_limit: usize,
         deck_type: DeckType, 
@@ -327,9 +346,16 @@ impl GameContext {
 }
 
 #[derive(Deserialize)]
-pub struct GameConfig {
-    pub player_count: usize,
-    pub bots: Vec<AIType>,
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub(crate) enum ConfigPlayer {
+    Human { id: usize },
+    Bot { id: usize, ai_type: AIType }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GameConfig {
+    pub players: Vec<ConfigPlayer>,
     pub rng_seed: u64,
     pub blind_size: i32,
     pub min_raise: i32,
@@ -346,45 +372,26 @@ pub struct Pot {
     pub players: Vec<usize>,
 }
 
-#[derive(Serialize)]
-pub struct PlayerState {
-    pub id: usize,
-    pub chips: i32,
-    pub total_bet: i32,
-    pub round_bet: i32,
-    pub folded: bool,
-    pub acted: bool,
-    pub is_turn: bool,
-    pub is_dealer: bool,
-    pub hole_cards: Vec<String>,
-    pub special_cards: Vec<String>,
-    pub hand_type: String,
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct MoveEvent {
+    pub actor_id: Option<usize>,
+    pub action: MoveAction,
+    pub private: bool,
 }
 
-#[derive(Serialize)]
-pub struct GameState {
-    pub round_name: String,
-    pub community_cards: Vec<String>,
-    pub pots: Vec<i32>,
-    pub round_bet_sum: i32,
-    pub overall_sum: i32,
-    pub highest_bet: i32,
-    pub deck_cards: usize,
-    pub winning_hand_type: String,
-    pub players: Vec<PlayerState>,
-    pub modifiers: RoundModifiers,
-}
-
-#[derive(Serialize)]
-pub struct MoveEvent {
-    pub player_id: usize,
-    pub action: String
-}
-
-#[derive(Serialize)]
-pub struct MoveResult {
-    pub events: Vec<MoveEvent>,
-    pub game_state: GameState,
+#[derive(Serialize, Clone)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub(crate) enum MoveAction {
+    Action { action: Action },
+    DealHole { count: usize },
+    DealCommunity { count: usize },
+    DealSpecial { count: usize },
+    RemoveHole { index: usize },
+    RemoveCommunity { index: usize },
+    RevealCard { target_id: usize, card_index: usize },
+    SwapBot,
+    SwapHuman,
 }
 
 pub struct Game {
@@ -444,12 +451,12 @@ impl Game {
      * Updates the current game config with a newly provided one
      * Returns a JSON string containing an error if not possible
      */
-    pub fn update_config(&mut self, config: GameConfig) -> Result<(), GameError> {
+    pub(crate) fn update_config(&mut self, config: GameConfig) -> Result<(), GameError> {
         if self.round > Round::Preround { 
             return Err(GameError::ConfigLocked); 
         }
 
-        if config.player_count + config.bots.len() > config.max_players {
+        if config.players.len() > config.max_players {
             return Err(GameError::RoomFull);
         }
 
@@ -467,14 +474,22 @@ impl Game {
         );
         let deck = config.deck_type.get_associated_deck();
 
-        let mut players: Vec<Player> = Vec::with_capacity(config.player_count + config.bots.len());
-        for _ in 0..config.player_count {
-            players.push(Player::new(PlayerType::Human, ctx.id));
-            ctx.id += 1;
-        }
-        for ai_type in config.bots {
-            players.push(Player::new(PlayerType::Computer(AI::new(ai_type)), ctx.id));
-            ctx.id += 1;
+        let mut ids: HashSet<usize> = HashSet::new();
+
+        let mut players: Vec<Player> = Vec::with_capacity(config.players.len());
+        for config_player in config.players {
+            let (player_type, id) = match config_player {
+                ConfigPlayer::Human { id } => (PlayerType::Human, id),
+                ConfigPlayer::Bot { id, ai_type } => (PlayerType::Computer(AI::new(ai_type)), id),
+            };
+
+            if ids.contains(&id) {
+                return Err(GameError::DuplicateConfigID);
+            }
+
+            ctx.id = ctx.id.max(id.saturating_add(1));
+            ids.insert(id);
+            players.push(Player::new(player_type, id));
         }
     
         self.ctx = ctx;
@@ -488,7 +503,7 @@ impl Game {
      * Attempts to add a player to the room
      * Returns a JSON string containing either the ID of the new player or an error
      */
-    pub fn try_add_player(&mut self, player_type: PlayerType) -> Result<usize, GameError> {
+    pub(crate) fn try_add_player(&mut self, player_type: PlayerType) -> Result<usize, GameError> {
         if self.players.len() >= self.ctx.max_players {
             return Err(GameError::RoomFull);
         } else if self.round >= Round::Preflop {
@@ -536,12 +551,13 @@ impl Game {
     /**
      * Progresses the round from the intermission to the Preflop
      */
-    pub fn start(&mut self) -> Result<Vec<MoveEvent>, GameError> {
+    pub(crate) fn start(&mut self) -> Result<Vec<MoveEvent>, GameError> {
+        let mut events = Vec::new();
         match self.round {
-            Round::Preround => self.start_new_hand(),
+            Round::Preround => self.start_new_hand(&mut events),
             Round::Showdown => {
                 self.end_hand();
-                self.start_new_hand();
+                self.start_new_hand(&mut events);
             },
             _ => return Err(GameError::InvalidRound),
         }
@@ -550,7 +566,6 @@ impl Game {
             return Ok(Vec::new());
         }
 
-        let mut events = Vec::new();
         self.advance_game_loop(&mut events);
         Ok(events)
     }
@@ -560,7 +575,7 @@ impl Game {
      * Given a player id and action, handles the full process of validating, executing, and advancing the game loop
      * Returns a JSON string containing either an error or a response indicating the events which occurred and the complete new game state
      */
-    pub fn player_move(&mut self, player_id: usize, action: Action) -> Result<Vec<MoveEvent>, GameError> {
+    pub(crate) fn player_move(&mut self, player_id: usize, action: Action) -> Result<Vec<MoveEvent>, GameError> {
         let current_turn_id = self.players
             .get(self.turn_index)
             .map(|player| player.id)
@@ -623,7 +638,7 @@ impl Game {
      * Swaps a player with a given ID's type with a bot or human
      * Returns a JSON string including events and the new game state after swapping
      */
-    pub fn toggle_id_with_bot(&mut self, player_id: usize, bot: bool) -> Result<Vec<MoveEvent>, GameError> {
+    pub(crate) fn toggle_id_with_bot(&mut self, player_id: usize, bot: bool) -> Result<Vec<MoveEvent>, GameError> {
         let index = match self.get_player_index(player_id) {
             Ok(index) => index,
             Err(err) => return Err(err),
@@ -633,7 +648,13 @@ impl Game {
         
         if bot {
             let pid = self.players[index].id;
-            event_log.push(MoveEvent { player_id: pid, action: "SWAP_BOT".to_string() });
+
+            event_log.push(MoveEvent { 
+                actor_id: Some(pid), 
+                action: MoveAction::SwapBot, 
+                private: false 
+            });
+
             let new_ai = AI::new(AIType::Safe);
             self.players[index].player_type = PlayerType::Computer(new_ai);
 
@@ -642,7 +663,13 @@ impl Game {
             }
         } else {
             let pid = self.players[index].id;
-            event_log.push(MoveEvent { player_id: pid, action: "SWAP_HUMAN".to_string() });
+
+            event_log.push(MoveEvent { 
+                actor_id: Some(pid), 
+                action: MoveAction::SwapHuman, 
+                private: false 
+            });
+
             self.players[index].player_type = PlayerType::Human;
         }
 
@@ -673,7 +700,7 @@ impl Game {
 
             // otherwise, if the current round is now complete, advance the round
             if self.is_round_complete() {
-                self.advance_to_next_round();
+                self.advance_to_next_round(events);
                 if self.round == Round::Preround || self.round == Round::Showdown {
                     break;
                 }
@@ -686,8 +713,12 @@ impl Game {
             if !turn_complete {
                 match current_player.player_type {
                     PlayerType::Computer(mut ai) => {
-                        let ai_action = ai.calculate_next_action(self.turn_index, self);
-                        let _ = self.apply_action(self.turn_index, ai_action, events);
+                        let mut ai_actions: Vec<Action> = ai.calculate_next_action(self.turn_index, self);
+                        ai_actions.push(Action::EndMove);
+
+                        for ai_action in ai_actions {
+                            let _ = self.apply_action(self.turn_index, ai_action, events);
+                        }
                         
                         if self.current_turn_complete() {
                             self.advance_turn_index();
@@ -712,7 +743,18 @@ impl Game {
      * Returns an error if applicable
      */
     fn apply_action(&mut self, player_index: usize, action: Action, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
+        let player = self.players.get(player_index).ok_or(GameError::NoActiveTurnPlayer)?;
+        // prevent players from making a main action twice
+        if player.acted && matches!(action, Action::Raise { amount: _ } | Action::Fold | Action::Call) {
+            return Err(GameError::PrimaryMoveAlreadyMade);
+        }
+
+        if player.turn_ended || player.folded {
+            return Err(GameError::InvalidAction);
+        }
+
         let player_id = self.players[player_index].id;
+        let mut action_events: Vec<MoveEvent> = Vec::new();
 
         match action {
             Action::Fold => {
@@ -729,19 +771,19 @@ impl Game {
                 self.round_pool += call_amount;
                 p.acted = true;
             }
-            Action::Raise(raise) => {
+            Action::Raise { amount } => {
                 if self.modifiers.raises_blocked() {
                     return Err(GameError::RaiseBlocked);
                 }
 
-                if raise < self.ctx.min_raise {
-                    return Err(GameError::RaiseBelowMin);
-                }
-
                 let p = &self.players[player_index];
                 let max_raise = p.chips - (self.bet - p.round_bet).max(0);
-                let true_raise = raise.min(max_raise);
+                let true_raise = amount.min(max_raise);
                 let raise_cost = ((self.bet + true_raise) - p.round_bet).min(p.chips);
+
+                if amount < (self.ctx.min_raise as f64 * self.modifiers.vars.ante_multiplier) as i32 && p.chips > raise_cost {
+                    return Err(GameError::RaiseBelowMin);
+                }
 
                 let p = &mut self.players[player_index];
                 p.chips -= raise_cost;
@@ -764,6 +806,7 @@ impl Game {
                     p.folded = true;
                 }
                 p.acted = true;
+                p.turn_ended = true;
             }
             Action::EndMove => {
                 let p = &mut self.players[player_index];
@@ -778,11 +821,26 @@ impl Game {
                     return Err(GameError::SpecialCardsBlocked);
                 }
 
-                card.use_card(player_id, target_id, card_index, self, events)?;
+                // special card usage should be visible before its effects
+                card.use_card(player_id, target_id, card_index, self, &mut action_events)?;
+            },
+            Action::DiscardSpecial { card_index } => {
+                if card_index >= self.players[player_index].special_cards.len() {
+                    return Err(GameError::CardIndexInvalid);
+                }
+
+                self.players[player_index].special_cards.remove(card_index);
             }
         }
 
-        events.push(MoveEvent { player_id, action: action.to_string() });
+        events.push(MoveEvent { 
+            actor_id: Some(player_id), 
+            action: MoveAction::Action { action }, 
+            private: false 
+        });
+
+        // ensures events caused by an action are always queued after the action itself
+        events.extend(action_events);
 
         Ok(())
     }
@@ -799,7 +857,14 @@ impl Game {
 
         let next_player_id = self.players[self.turn_index].id;
         // clear expired blocks
-        self.modifiers.player_turn(next_player_id);
+        let expired = self.modifiers.player_turn(next_player_id);
+        self.clear_modifier_effects(expired);
+    }
+
+    fn clear_modifier_effects(&mut self, expired: Vec<Modifier>) {
+        for m in expired {
+            m.remove_effect(self);
+        }
     }
 
     /**
@@ -862,9 +927,11 @@ impl Game {
         active_players.iter().all(|p| p.chips == 0 || (p.acted && p.round_bet == self.bet))
     }
 
-    fn advance_to_next_round(&mut self) {
+    fn advance_to_next_round(&mut self, events: &mut Vec<MoveEvent>) {
         self.process_pots();
-        self.modifiers.round_ended();
+
+        let expired = self.modifiers.round_ended();
+        self.clear_modifier_effects(expired);
 
         for p in self.players.iter_mut() {
             p.round_bet = 0;
@@ -893,28 +960,27 @@ impl Game {
 
         match self.round {
             Round::Preflop => {
-                self.deal_community_cards(3);
-                self.deal_special_cards(1);
+                self.deal_community_cards(3, events);
                 self.round = Round::Flop;
             }
             Round::Flop => {
-                self.deal_community_cards(1);
+                self.deal_community_cards(1, events);
+                self.deal_special_cards(1, events);
                 self.round = Round::Turn;
             }
             Round::Turn => {
-                self.deal_community_cards(1);
+                self.deal_community_cards(1, events);
                 self.round = Round::River;
             }
             Round::River => {
                 self.round = Round::Showdown;
                 self.resolve_showdown();
-                self.deal_special_cards(1);
             }
             _ => {}
         }
     }
 
-    fn start_new_hand(&mut self) {
+    fn start_new_hand(&mut self, events: &mut Vec<MoveEvent>) {
         let active_count = self.players.iter().filter(|p| p.chips > 0).count();
         if active_count <= 1 {
             self.round = Round::Room;
@@ -939,7 +1005,6 @@ impl Game {
         for p in self.players.iter_mut() {
             // reset player params
             p.cards.clear();
-            p.special_cards.clear();
             p.round_bet = 0;
             p.total_bet = 0;
             p.acted = false;
@@ -952,7 +1017,7 @@ impl Game {
             }
         }
 
-        self.deal_hole_cards(2);
+        self.deal_hole_cards(2, events);
         let len = self.players.len();
 
         let mut make_player_pay_blind = |player_index: usize, blind_size: i32| {
@@ -968,7 +1033,7 @@ impl Game {
             let sb_index = sb_index;
             let bb_index = (sb_index + 1) % len;
 
-            let blind_size = (self.ctx.blind_size as f64 * self.modifiers.blind_multiplier()) as i32;
+            let blind_size = (self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32;
 
             let sb = make_player_pay_blind(sb_index, blind_size / 2);
             let bb = make_player_pay_blind(bb_index, blind_size);
@@ -989,15 +1054,15 @@ impl Game {
         }
     }
 
-    fn deal_hole_cards(&mut self, count: usize) {
+    fn deal_hole_cards(&mut self, count: usize, events: &mut Vec<MoveEvent>) {
         for _ in 0..count {
             for i in 0..self.players.len() {
-                self.deal_hole_card(self.players[i].id);
+                self.deal_hole_card(self.players[i].id, events);
             }
         }
     }
 
-    fn deal_hole_card(&mut self, player_id: usize) {
+    fn deal_hole_card(&mut self, player_id: usize, events: &mut Vec<MoveEvent>) {
         let player_index = self.get_player_index(player_id).unwrap();
         if self.players[player_index].folded {
             return;
@@ -1006,9 +1071,15 @@ impl Game {
         let next_card = self.deck.pop().unwrap_or(ExpandedCard::Unmarked);
         self.players[player_index].cards.push(next_card);
         self.players[player_index].card_visibility.push(vec![]);
+
+        events.push(MoveEvent { 
+            actor_id: Some(player_id), 
+            action: MoveAction::DealHole { count: 1 }, 
+            private: false 
+        });
     }
 
-    fn remove_hole_card(&mut self, player_id: usize, card_idx: usize) -> Result<(), GameError> {
+    fn remove_hole_card(&mut self, player_id: usize, card_idx: usize, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
         let player_index = self.get_player_index(player_id).unwrap();
         if self.players[player_index].cards.get(card_idx).is_none() {
             return Err(GameError::CardIndexInvalid);
@@ -1016,6 +1087,65 @@ impl Game {
 
         self.players[player_index].cards.remove(card_idx);
         self.players[player_index].card_visibility.remove(card_idx);
+        events.push(MoveEvent { 
+            actor_id: Some(player_id), 
+            action: MoveAction::RemoveHole { index: card_idx }, 
+            private: false 
+        
+        });
+        Ok(())
+    }
+
+    /**
+     * Replaces a specified hole card of a specified player with a new hole card, populating an event Vector
+     */
+    fn replace_hole_card(&mut self, player_id: usize, card_idx: usize, replacement: ExpandedCard, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
+        let player_index = self.get_player_index(player_id).unwrap();
+        if self.players[player_index].cards.get(card_idx).is_none() {
+            return Err(GameError::CardIndexInvalid);
+        }
+
+        self.players[player_index].cards[card_idx] = replacement;
+
+        events.push(MoveEvent { 
+            actor_id: Some(player_id), 
+            action: MoveAction::RemoveHole { index: card_idx }, 
+            private: false 
+        
+        });
+
+        events.push(MoveEvent { 
+            actor_id: Some(player_id), 
+            action: MoveAction::DealHole { count: 1 }, 
+            private: false 
+        });
+
+        Ok(())
+    }
+
+    /**
+     * Replaces a specified community card with a provided replacement
+     */
+    fn replace_community_card(&mut self, card_idx: usize, replacement: ExpandedCard, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
+        if self.community.get(card_idx).is_none() {
+            return Err(GameError::CardIndexInvalid);
+        }
+
+        self.community[card_idx] = replacement;
+
+        events.push(MoveEvent { 
+            actor_id: None, 
+            action: MoveAction::RemoveCommunity { index: card_idx }, 
+            private: false 
+        
+        });
+
+        events.push(MoveEvent { 
+            actor_id: None, 
+            action: MoveAction::DealCommunity { count: 1 }, 
+            private: false 
+        });
+
         Ok(())
     }
 
@@ -1027,9 +1157,8 @@ impl Game {
         entries.sort_by(|(_, a), (_, b)| b.cmp(a));
 
         // apply pot mult
-        let pot_mult = self.modifiers.pot_multiplier();
         for pot in &mut self.pots {
-            pot.amount = (pot.amount as f64 * pot_mult).round() as i32;
+            pot.amount = (pot.amount as f64 * self.modifiers.vars.pot_multiplier).round() as i32;
         }
 
         // iterates through all pots, finding winners for each and individually distributing chips
@@ -1102,7 +1231,8 @@ impl Game {
 
     fn award_pot_to_single_winner(&mut self, winner_id: usize) {
         self.process_pots();
-        let total_pot: i32 = self.pots.iter().map(|p| p.amount).sum::<i32>();
+        let raw_pot: i32 = self.pots.iter().map(|p| p.amount).sum::<i32>();
+        let total_pot = (raw_pot as f64 * self.modifiers.vars.pot_multiplier).round() as i32;
         if let Ok(index) = self.get_player_index(winner_id) {
             self.players[index].chips += total_pot;
             self.turn_index = index;
@@ -1116,7 +1246,9 @@ impl Game {
     fn end_hand(&mut self) {
         self.games_played += 1;
         self.players.retain(|p| !p.remove);
-        self.modifiers.hand_ended();
+
+        let expired = self.modifiers.hand_ended();
+        self.clear_modifier_effects(expired);
 
         if self.games_played >= self.ctx.round_limit {
             self.end_game();
@@ -1131,35 +1263,78 @@ impl Game {
         self.round = Round::Preround;
     }
 
-    fn deal_community_cards(&mut self, count: usize) {
+    /**
+     * Handles the full process of dealing n community cards to the board, consuming a use of active
+       draw rules and populating a given event Vector
+     */
+    fn deal_community_cards(&mut self, count: usize, events: &mut Vec<MoveEvent>) {
         for _ in 0..count {
-            let draw_rules = self.modifiers.draw_rule(self);
-            let card = if let Some(index) = self.deck.iter().rposition(|card| draw_rules(card)) 
-            {
-                self.deck.remove(index)
-            } else {
-                // could alternatively just draw the first card, but
-                // a way to force zero value cards is interesting
-                ExpandedCard::Unmarked
-            };
-
+            let card = self.pop_next_deck_card();
             self.community.push(card);
-            self.modifiers.community_draw();
         }
+
+        events.push(MoveEvent { 
+            actor_id: None, 
+            action: MoveAction::DealCommunity { count }, 
+            private: false 
+        });
     }
 
-    fn deal_special_cards(&mut self, count: usize) {
+    /**
+     * Draws a single deck card from the pile, adhering to draw rules and producing a draw event
+     * Importantly, this does not populate the event array 
+     */
+    fn pop_next_deck_card(&mut self) -> ExpandedCard {
+        let draw_rules = self.modifiers.draw_rule(self);
+        let card = if let Some(index) = self.deck.iter().rposition(|card| draw_rules(card)) {
+            self.deck.remove(index)
+        } else {
+            ExpandedCard::Unmarked
+        };
+
+        let expired = self.modifiers.community_draw();
+        self.clear_modifier_effects(expired);
+
+        card
+    }
+
+    fn remove_community_card(&mut self, index: usize, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
+        if index >= self.community.len() {
+            return Err(GameError::CardIndexInvalid);
+        }
+
+        self.community.remove(index);
+        events.push(MoveEvent { 
+            actor_id: None, 
+            action: MoveAction::RemoveCommunity { index }, 
+            private: false 
+        });
+        
+        Ok(())
+    }
+
+    fn deal_special_cards(&mut self, count: usize, events: &mut Vec<MoveEvent>) {
         for p_index in 0..self.players.len() {
             let special_card_count = self.players[p_index].special_cards.len();
             if self.players[p_index].folded || special_card_count >= self.ctx.special_card_limit as usize {
                 continue;
             }
 
+            let special_capacity = self.ctx.special_card_limit.saturating_sub(special_card_count);
+            if special_capacity <= 0 {
+                continue;
+            }
+
             let p_id = self.players[p_index].id;
-            let mut drawn_cards = SpecialCard::draw_special_cards(count, p_id, self);
-            // takes only cards under the limit
-            let acceptable_cards = drawn_cards.drain(..drawn_cards.len().min(self.ctx.special_card_limit as usize - special_card_count));
-            self.players[p_index].special_cards.extend(acceptable_cards);
+            let drawn_count = count.min(special_capacity);
+            let drawn_cards = SpecialCard::draw_special_cards(drawn_count, p_id, self);
+            self.players[p_index].special_cards.extend(drawn_cards);
+
+            events.push(MoveEvent { 
+                actor_id: Some(p_id), 
+                action: MoveAction::DealSpecial { count: drawn_count }, 
+                private: false 
+            });
         }
     }
 
@@ -1167,78 +1342,11 @@ impl Game {
         let max_chips = self.players.iter().map(|p| p.chips).max().unwrap_or(0);
         let winners: Vec<usize> = self.players.iter().filter_map(|p| if p.chips == max_chips { Some(p.id) } else { None }).collect();
         self.winner_ids = winners;
+
+        let expired = self.modifiers.active.clone();
+        expired.iter().for_each(|m| m.remove_effect(self));
         self.modifiers.game_ended();
 
         self.round = Round::GameEnd;
-    }
-
-    /**
-     * Gets the current game state, as seen by the specified player, as a GameState struct
-     */
-    pub fn get_game_state(&self, player_id: usize) -> GameState {
-        let is_showdown = self.round == Round::Showdown;
-        let player_states: Vec<PlayerState> = self.players.iter().enumerate().map(|(i, p)| {
-            let hole_cards = if is_showdown || p.id == player_id {
-                p.cards.iter().map(|c| c.to_string()).collect()
-            } else {
-                p.cards.iter().enumerate().map(|(card_idx, c)| {
-                    let is_visible = p.card_visibility.get(card_idx).map_or(false, |vis| vis.contains(&player_id));
-                    if is_visible {
-                        c.to_string()
-                    } else {
-                        "HIDDEN".to_string()
-                    }
-                }).collect()
-            };
-
-            let special_cards = if p.id == player_id {
-                p.special_cards.iter().map(|c| c.to_string()).collect()
-            } else {
-                p.special_cards.iter().map(|_| "HIDDEN".to_string()).collect()
-            };
-
-            let full_cards = [&self.community[..], &p.cards[..]].concat();
-            let hand_type_str = if !p.folded && !full_cards.is_empty() && (p.id == player_id || is_showdown) {
-                if self.modifiers.blackjack_active() {
-                    let score = special::evaluate_blackjack_hand(&p.cards);
-                    format!("{}", if score == -1 { "Bust".to_string() } else { score.to_string() })
-                } else {
-                    let hand_eval = Hand::new(&full_cards, &self.ctx.hand_fns, &self.modifiers.invalidated_hands(), self.ctx.hand_size);
-                    hand_eval.hand_type.to_string()
-                }
-            } else {
-                String::new()
-            };
-
-            PlayerState {
-                id: p.id,
-                chips: p.chips,
-                round_bet: p.round_bet,
-                total_bet: p.total_bet,
-                folded: p.folded,
-                acted: p.acted,
-                is_turn: self.turn_index == i && !is_showdown && self.round != Round::Preround,
-                is_dealer: self.dealer_index == i,
-                hole_cards,
-                special_cards,
-                hand_type: hand_type_str,
-            }
-        }).collect();
-
-        let pots: Vec<i32> = self.pots.iter().map(|p| p.amount).collect();
-        let total_pot: i32 = pots.iter().sum::<i32>() + self.round_pool;
-
-        GameState {
-            round_name: self.round.to_string(),
-            community_cards: self.community.iter().map(|c| c.to_string()).collect(),
-            pots,
-            round_bet_sum: self.round_pool,
-            overall_sum: total_pot,
-            highest_bet: self.bet,
-            deck_cards: self.deck.len(),
-            winning_hand_type: self.winning_hand_type.clone(),
-            players: player_states,
-            modifiers: self.modifiers.clone(),
-        }
     }
 }

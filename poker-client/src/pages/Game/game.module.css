@@ -15,6 +15,22 @@
     --text-colour: #dcdcdc;
     --border-colour: #dcdcdc;
 
+    --card-width: 62px;
+    --card-height: 90px;
+    --card-gap: 0.5rem;
+
+    --card-slot-border: 2px;
+    --card-slot-width: 66px;
+    --card-slot-height: 94px;
+
+    --stack-offset: 140px;
+
+    --anim-betchip-add-ms: 100;
+    --anim-flip-ms: 450;
+    --anim-deal-ms: 320;
+    --anim-dissolve-ms: 400;
+    --anim-showdown-delay-ms: calc(var(--anim-flip-ms) + 200);
+
     color: var(--text-colour);
 }
 
@@ -28,7 +44,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    image-rendering: pixelated; 
     padding: 1rem;
 }
 
@@ -39,7 +54,7 @@
     border-bottom: 4px solid var(--light-box-colour);
     padding-bottom: 0.5rem;
     color: var(--text-colour);
-    font-size: 1.6rem;
+    font-size: 1.5rem;
 }
 
 .headerInfo {
@@ -86,37 +101,55 @@
     font-size: 2rem;
     min-width: 110px;
     color: var(--input-focus-colour);
-    text-shadow: 1px 1px 0px var(--box-shadow-colour);
+    text-shadow: 2px 2px 0px var(--box-shadow-colour);
 }
 
-.communityCards, .holeCards {
+.communityCards {
     display: flex;
     flex-direction: row;
     align-items: center;
-    justify-content: center;
-    gap: 0.5rem;
+    justify-content: flex-start;
+    gap: var(--card-gap);
     flex-wrap: nowrap;
+    overflow: visible;
+    width: max-content;
+    max-width: none;
+}
+
+.holeCards {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: var(--card-gap);
+    flex-wrap: nowrap;
+    width: calc(var(--card-slot-width) * 2 + var(--card-gap));
+    overflow: visible;
+}
+
+.holeCardSlot {
+    overflow: visible;
 }
 
 .cardSlot {
-    width: 62px;
-    height: 90px;
-    border: 2px solid var(--light-box-colour);
+    width: var(--card-slot-width);
+    height: var(--card-slot-height);
+    border: var(--card-slot-border) solid var(--light-box-colour);
+    box-sizing: border-box;
+
     background: rgba(0, 0, 0, 0.4);
     display: flex;
     align-items: center;
     justify-content: center;
-    box-sizing: border-box;
-    perspective: 1000px;
     position: relative;
-    flex-shrink: 0;
+    flex: 0 0 auto;
+    overflow: visible;
 }
 
 .cardInner {
     position: relative;
-    width: 100%;
-    height: 100%;
-    transition: transform 0.6s cubic-bezier(0.4, 0.2, 0.2, 1);
+    width: var(--card-width);
+    height: var(--card-height);
     transform-style: preserve-3d;
 }
 
@@ -124,6 +157,7 @@
     0% {
         transform: rotateY(0deg);
     }
+
     100% {
         transform: rotateY(180deg);
     }
@@ -131,16 +165,15 @@
 
 .cardFlipped {
     transform: rotateY(180deg);
-    animation: flipToFront 0.4s cubic-bezier(0.4, 0.2, 0.2, 1) forwards;
 }
 
-.cardFront, .cardBackFace {
+.cardFront,
+.cardBackFace {
     position: absolute;
     top: 0;
     left: 0;
     width: 100%;
     height: 100%;
-    border-radius: 4px;
     box-sizing: border-box;
     backface-visibility: hidden;
     -webkit-backface-visibility: hidden;
@@ -148,7 +181,6 @@
 
 .cardFront {
     background: #ffffff;
-    border: 2px solid #000000;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -168,35 +200,13 @@
 .cardFront img {
     width: 32px;
     height: 32px;
+    image-rendering: crisp-edges;
 }
 
-.cardBackFace {
+.playingBackFace {
     background: #8e1616;
     border: 2px solid #ffffff;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-}
-
-.cardBack {
-    background: #8e1616;
-    border: 2px solid #ffffff;
-}
-
-@keyframes dealVector {
-    0% {
-        transform: translate(var(--deal-x), var(--deal-y)) scale(0.75) rotate(-25deg);
-        opacity: 0.6;
-    }
-    15% {
-        opacity: 1;
-    }
-    100% {
-        transform: translate(0, 0) scale(1) rotate(0deg);
-        opacity: 1;
-    }
-}
-
-.dealtCard {
-    animation: dealVector 0.4s cubic-bezier(0.25, 1, 0.5, 1) forwards;
 }
 
 .playerSeat {
@@ -204,36 +214,54 @@
     transform: translate(-50%, -50%);
     transition: opacity 0.3s ease, transform 0.3s ease;
     z-index: 10;
+    overflow: visible;
 }
 
 .seatInner {
     position: relative;
-    padding: 0.5rem;
+    padding: 6px 8px;
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 160px;
-    gap: 0.2rem;
+    width: 156px;
+    gap: 2px;
+    overflow: visible;
 }
 
 .seatName {
     font-size: 1.5rem;
     color: var(--text-colour);
-    font-family: 'Jersey 10', sans-serif;
+    font-family: 'Jersey 10', cursive;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 120px;
+    max-width: 140px;
+    text-align: center;
 }
 
-.handPlaceholder {
-    min-height: 1.5rem;
-}
-
-.seatChips, .seatBet, .handTypeTag {
+.handPlaceholder,
+.handTypeTag {
     font-size: 1.5rem;
     font-family: 'Jersey 10', sans-serif;
     color: var(--input-focus-colour);
+    line-height: 1;
+    height: 1.5rem;
+    min-height: 1.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    padding: 0;
+}
+
+.seatChips,
+.seatBet {
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', sans-serif;
+    color: var(--input-focus-colour);
+    line-height: 1;
+    margin: 0;
+    padding: 0;
 }
 
 .dealerBadgeWrapper {
@@ -247,10 +275,10 @@
 .dealerBadgeInner {
     background: var(--box-secondary-colour);
     color: var(--input-focus-colour);
-    font-family: 'Tiny5', sans-serif;
-    font-size: 1rem;
+    font-family: 'Jersey 10', sans-serif;
+    font-size: 1.5rem;
     font-weight: bold;
-    padding: 2px 5px 2px 7px;
+    padding: 2px 6px;
     line-height: 1;
     display: flex;
     align-items: center;
@@ -261,13 +289,21 @@
 .waitingNotice {
     font-size: 1.5rem;
     color: var(--input-focus-colour);
-    text-shadow: 1px 1px 0px var(--box-shadow-colour);
+    text-shadow: 2px 2px 0px var(--box-shadow-colour);
 }
 
 @keyframes checkPulse {
-    0% { transform: translate(-50%, -50%) scale(1); }
-    50% { transform: translate(-50%, -50%) scale(1.15); }
-    100% { transform: translate(-50%, -50%) scale(1); }
+    0% {
+        transform: translate(-50%, -50%) scale(1);
+    }
+
+    50% {
+        transform: translate(-50%, -50%) scale(1.15);
+    }
+
+    100% {
+        transform: translate(-50%, -50%) scale(1);
+    }
 }
 
 .animatingCheck {
@@ -284,9 +320,9 @@
 .deckStack {
     position: absolute;
     top: -10%;
-    transform: translateX(-140px);
-    width: 62px;
-    height: 90px;
+    transform: translateX(calc(-1 * (var(--stack-offset))));
+    width: var(--card-width);
+    height: var(--card-height);
     z-index: 5;
     pointer-events: none;
 }
@@ -295,12 +331,275 @@
     position: absolute;
     width: 100%;
     height: 100%;
-    background: #8e1616;
-    border: 2px solid #ffffff;
-    border-radius: 4px;
-    box-shadow: -1px 2px 3px rgba(0, 0, 0, 0.4);
     box-sizing: border-box;
     transition: transform 0.3s ease;
+}
+
+.specialDeckStack {
+    position: absolute;
+    top: -10%;
+    transform: translateX(var(--stack-offset));
+    width: var(--card-width);
+    height: var(--card-height);
+    z-index: 5;
+    pointer-events: none;
+}
+
+.specialDeckCard {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    box-shadow: 2px 2px rgba(0, 0, 0, 0.4);
+}
+
+.specialBackFace {
+    background: #662c91;
+    border: 2px solid #ffffff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.specialBackFace img {
+    image-rendering: crisp-edges;
+    width: 36px;
+    height: 36px;
+}
+
+.specialCardBar {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0px;
+    margin-top: 4px;
+    overflow: visible;
+    z-index: 20;
+}
+
+.specialSlotWrapper {
+    position: relative;
+    overflow: visible;
+}
+
+.specialSlotWrapper {
+    position: relative;
+    overflow: visible;
+    z-index: 20;
+}
+
+.specialSelectionText {
+    position: absolute;
+    bottom: calc(100% + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--box-secondary-colour);
+    border: 2px solid var(--input-focus-colour);
+    padding: 8px 12px;
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', cursive;
+    color: var(--input-focus-colour);
+    box-shadow: 4px 4px 0px var(--box-shadow-colour);
+    pointer-events: none;
+    z-index: 60;
+    width: max-content;
+    min-width: 140px;
+    max-width: 240px;
+    white-space: normal;
+    word-break: normal;
+    overflow-wrap: break-word;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.specialSelectionText.active,
+.specialSelectionText.hovered {
+    opacity: 1;
+}
+
+.specialSelectionDesc {
+    font-size: 1.2rem;
+    opacity: 0.85;
+    white-space: normal;
+    line-height: 1.15;
+    text-align: center;
+}
+
+.specialSelectionInstruction {
+    font-size: 1.2rem;
+    color: #ffd700;
+    white-space: normal;
+    line-height: 1.15;
+    text-align: center;
+}
+
+.specialCardHand {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--card-gap);
+    padding: 0;
+    margin-bottom: 4px;
+    overflow: visible;
+}
+
+.specialCardSlot {
+    width: var(--card-width);
+    height: var(--card-height);
+    box-sizing: border-box;
+    background: transparent;
+    border: none;
+    position: relative;
+    flex: 0 0 auto;
+    overflow: visible;
+    cursor: pointer;
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.specialCardSlot:hover {
+    transform: translateY(-3px) scale(1.05);
+    z-index: 40;
+    filter: drop-shadow(2px 2px 0px var(--box-shadow-colour));
+}
+
+.specialCardSlot:active {
+    transform: translateY(-2px) scale(1.03);
+}
+
+.selectedSpecialCard {
+    transform: translateY(-4px) scale(1.08) !important;
+    z-index: 50 !important;
+    border-color: var(--input-focus-colour) !important;
+    box-shadow: 0 0 0 3px var(--input-focus-colour), 4px 4px 0px var(--box-shadow-colour) !important;
+}
+
+/* Animated Special Card Use Overlay & Keyframes */
+.animatedSpecialCardOverlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: var(--card-width);
+    height: var(--card-height);
+    z-index: 9999;
+    pointer-events: none;
+    perspective: 1000px;
+    will-change: transform, opacity;
+}
+
+.animatedSpecialCardOverlay .cardInner {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+    transition: transform 0.4s ease;
+}
+
+.animatedSpecialCardOverlay.animFlipReveal .cardInner,
+.animatedSpecialCardOverlay.animDissolveFlipped .cardInner {
+    transform: rotateY(180deg);
+}
+
+@keyframes specialMoveOther {
+    0% {
+        transform: translate(var(--start-x), var(--start-y)) scale(0.2);
+        opacity: 0;
+    }
+
+    30% {
+        opacity: 1;
+    }
+
+    100% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.1);
+        opacity: 1;
+    }
+}
+
+@keyframes specialMoveSelf {
+    0% {
+        transform: translate(var(--start-x), var(--start-y)) scale(1);
+        opacity: 1;
+    }
+
+    100% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.1);
+        opacity: 1;
+    }
+}
+
+@keyframes specialFlipRevealKeyframe {
+    0% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.1);
+    }
+
+    100% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.1);
+    }
+}
+
+@keyframes specialDissolveCenterFlippedKeyframe {
+    0% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.1);
+        opacity: 1;
+    }
+
+    70% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.15);
+        opacity: 0.8;
+    }
+
+    100% {
+        transform: translate(var(--end-x), var(--end-y)) scale(0);
+        opacity: 0;
+    }
+}
+
+@keyframes specialDissolveCenterFaceUpKeyframe {
+    0% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.1);
+        opacity: 1;
+    }
+
+    70% {
+        transform: translate(var(--end-x), var(--end-y)) scale(1.15);
+        opacity: 0.8;
+    }
+
+    100% {
+        transform: translate(var(--end-x), var(--end-y)) scale(0);
+        opacity: 0;
+    }
+}
+
+.animMoveOther {
+    animation: specialMoveOther 550ms cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animMoveSelf {
+    animation: specialMoveSelf 550ms cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animFlipReveal {
+    animation: specialFlipRevealKeyframe 450ms cubic-bezier(0.4, 0.2, 0.2, 1) forwards;
+}
+
+.animDissolveFlipped {
+    animation: specialDissolveCenterFlippedKeyframe 450ms ease-in forwards;
+}
+
+.animDissolveFaceUp {
+    animation: specialDissolveCenterFaceUpKeyframe 450ms ease-in forwards;
+}
+
+.specialCardCount {
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', sans-serif;
 }
 
 .actionHud {
@@ -308,6 +607,7 @@
     display: flex;
     justify-content: center;
     align-items: center;
+    overflow: visible;
 }
 
 .turnBar {
@@ -323,24 +623,24 @@
     padding: 0;
     cursor: pointer;
     transition: transform 0.1s;
-    filter: drop-shadow(3px 3px 0px var(--box-shadow-colour));
+    filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
 }
 
 .btnWrapper:hover:not(:disabled) {
     transform: translate(2px, 2px);
-    filter: drop-shadow(1px 1px 0px var(--box-shadow-colour));
+    filter: drop-shadow(2px 2px 0px var(--box-shadow-colour));
 }
 
 .btnWrapper:active:not(:disabled) {
-    transform: translate(3px, 3px);
+    transform: translate(4px, 4px);
     filter: drop-shadow(0px 0px 0px var(--box-shadow-colour));
 }
 
 .btnWrapper:disabled {
     cursor: not-allowed;
-    filter: drop-shadow(1px 1px 0px var(--box-shadow-colour));
+    filter: drop-shadow(2px 2px 0px var(--box-shadow-colour));
     transform: translate(2px, 2px);
     opacity: 0.7;
 }
@@ -385,7 +685,7 @@
     border: none;
     outline: none;
     width: 100%;
-    padding: 0;
+    padding: 2px;
     color: var(--text-colour);
     text-align: center;
 }
@@ -407,9 +707,9 @@
 
 .capacityBtn {
     color: var(--input-focus-colour);
-    font-size: 2rem;
-    font-family: 'Jersey 10', sans-serif;
-    padding: 0 0.5rem;
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', cursive;
+    padding: 0 8px;
     cursor: pointer;
     user-select: none;
     background: transparent;
@@ -420,12 +720,216 @@
     color: var(--text-colour);
 }
 
-.joker > span {
-    font-family: 'Tiny5';
+.joker>span {
+    font-family: 'Minecraft', sans-serif;
     font-size: 1rem;
 }
 
-.joker > img {
+.joker>img {
     width: 16px !important;
     height: 16px !important;
+    image-rendering: crisp-edges;
+}
+
+@keyframes cardDealInPlace {
+    0% {
+        transform: translate(var(--deal-x, 0px), var(--deal-y, 0px)) scale(0.75) rotate(-25deg);
+    }
+
+    100% {
+        transform: translate(0, 0) scale(1) rotate(0deg);
+    }
+}
+
+@keyframes cardFlipInPlace {
+    0% {
+        transform: rotateY(0deg);
+    }
+
+    100% {
+        transform: rotateY(180deg);
+    }
+}
+
+.animatingDeal {
+    animation: cardDealInPlace calc(var(--anim-deal-ms) * 1ms) cubic-bezier(0.25, 1, 0.5, 1) forwards;
+    z-index: 9999 !important;
+    will-change: transform;
+}
+
+.animatingFlip {
+    animation: cardFlipInPlace calc(var(--anim-flip-ms) * 1ms) cubic-bezier(0.4, 0.2, 0.2, 1) forwards;
+    z-index: 9999 !important;
+    will-change: transform;
+}
+
+@keyframes cardDissolveInPlace {
+    0% {
+        transform: translate(var(--deal-x, 0px), var(--deal-y, 0px)) scale(0.75) rotate(-25deg);
+        opacity: 1;
+    }
+
+    70% {
+        transform: translate(0, 0) scale(0.65) rotate(0deg);
+        opacity: 1;
+    }
+
+    100% {
+        transform: translate(0, 0) scale(0) rotate(0deg);
+        opacity: 0;
+    }
+}
+
+.animatingDissolve {
+    animation: cardDissolveInPlace calc(var(--anim-dissolve-ms) * 1ms) cubic-bezier(0.25, 1, 0.5, 1) forwards;
+    z-index: 9999 !important;
+    will-change: transform, opacity;
+}
+
+.seatSpecialSlot {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: var(--card-width);
+    height: var(--card-height);
+    pointer-events: none;
+    opacity: 0;
+    z-index: 100;
+    overflow: visible;
+}
+
+.seatSpecialSlot:has(.animatingDissolve) {
+    opacity: 1;
+}
+
+.targetableCard {
+    cursor: pointer !important;
+    border-color: var(--secondary-button-colour) !important;
+    box-shadow: 0 0 0 2px var(--secondary-button-colour), 2px 2px 0px var(--box-shadow-colour) !important;
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease !important;
+}
+
+.targetableCard:hover {
+    transform: scale(1.08) !important;
+    border-color: var(--input-focus-colour) !important;
+    box-shadow: 0 0 0 2px var(--input-focus-colour), 4px 4px 0px var(--box-shadow-colour) !important;
+}
+
+.selectedTargetCard {
+    transform: scale(1.08) !important;
+    border-color: var(--input-focus-colour) !important;
+    box-shadow: 0 0 0 3px var(--input-focus-colour), 4px 4px 0px var(--box-shadow-colour) !important;
+}
+
+.targetableSeat {
+    cursor: pointer !important;
+    transition: transform 0.15s ease !important;
+}
+
+.targetableSeat:hover {
+    transform: translate(-50%, -50%) scale(1.06) !important;
+}
+
+.selectedTargetSeat {
+    transform: translate(-50%, -50%) scale(1.06) !important;
+    filter: drop-shadow(4px 4px 0px var(--input-focus-colour)) !important;
+}
+
+/* Active Modifiers Stack on Right Side */
+.activeModifiersContainer {
+    position: absolute;
+    right: 1.5rem;
+    top: 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    z-index: 100;
+    pointer-events: auto;
+}
+
+.modifierItemWrapper {
+    position: relative;
+    overflow: visible;
+    cursor: pointer;
+}
+
+.modifierPixelBox {
+    width: 44px;
+    height: 44px;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.modifierPixelBox img {
+    width: 32px;
+    height: 32px;
+    object-fit: contain;
+    image-rendering: pixelated;
+}
+
+.modifierFallbackIcon {
+    font-size: 1.4rem;
+    font-family: 'Jersey 10', sans-serif;
+    color: var(--input-focus-colour);
+    font-weight: bold;
+    display: none;
+}
+
+.modifierPixelBox img[style*="display: none"]+.modifierFallbackIcon {
+    display: block;
+}
+
+.modifierItemWrapper:hover .modifierPixelBox {
+    transform: scale(1.08);
+}
+
+/* Modifier Tooltip */
+.modifierTooltip {
+    position: absolute;
+    right: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--box-secondary-colour);
+    border: 2px solid var(--input-focus-colour);
+    padding: 8px 12px;
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', cursive;
+    color: var(--input-focus-colour);
+    box-shadow: 4px 4px 0px var(--box-shadow-colour);
+    pointer-events: none;
+    z-index: 120;
+    width: max-content;
+    min-width: 150px;
+    max-width: 240px;
+    white-space: normal;
+    word-break: normal;
+    overflow-wrap: break-word;
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.modifierItemWrapper:hover .modifierTooltip {
+    opacity: 1;
+}
+
+.modifierDesc {
+    font-size: 1.2rem;
+    color: var(--text-colour);
+    opacity: 0.9;
+    line-height: 1.15;
+}
+
+.modifierDuration {
+    font-size: 1.2rem;
+    color: #ffd700;
+    line-height: 1.15;
 }

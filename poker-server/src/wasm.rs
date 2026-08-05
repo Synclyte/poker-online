@@ -51,7 +51,7 @@ impl GameAPI {
 
     pub fn start(&mut self) -> String {
         match self.game.start() {
-            Ok(events) => api::move_json(&self.game, usize::MAX, events),
+            Ok(events) => api::move_result_json(&self.game, usize::MAX, events),
             Err(error) => api::error_json(&error),
         }
     }
@@ -65,7 +65,7 @@ impl GameAPI {
         })();
 
         match result {
-            Ok((viewer_id, events)) => api::move_json(&self.game, viewer_id, events),
+            Ok((viewer_id, events)) => api::move_result_json(&self.game, viewer_id, events),
             Err(error) => api::error_json(&error),
         }
     }
@@ -115,7 +115,7 @@ impl GameAPI {
             .and_then(|player_id| self.game.toggle_id_with_bot(player_id, bot));
 
         match result {
-            Ok(events) => api::move_json(&self.game, usize::MAX, events),
+            Ok(events) => api::move_result_json(&self.game, usize::MAX, events),
             Err(error) => api::error_json(&error),
         }
     }

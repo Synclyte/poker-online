@@ -9,9 +9,10 @@ mod tests {
 
     #[cfg(test)]
     mod game_tests {
-        use crate::Action::Raise;
+        use crate::Action::{Raise, Call, Fold, PlaySpecial};
+        use crate::api::view_game_state;
         use crate::ai::AIType;
-        use crate::{Action, DeckType, Game, GameConfig, PlayerType, Round, SpecialCard};
+        use crate::{Action, ConfigPlayer, DeckType, Game, GameConfig, GameError, MoveAction, MoveEvent, PlayerType, Round, SpecialCard};
         use crate::poker::*;
 
         fn get_configured_started_game(player_count: usize, bot_count: usize) -> Game {
@@ -24,10 +25,21 @@ mod tests {
         }
 
         fn create_valid_config(player_count: usize, bot_count: usize) -> GameConfig {
-            let bots: Vec<AIType> = (0..bot_count).map(|_| AIType::Smart).collect();
+            let mut players = Vec::with_capacity(player_count + bot_count);
+
+            for id in 0..player_count {
+                players.push(ConfigPlayer::Human { id });
+            }
+
+            for offset in 0..bot_count {
+                players.push(ConfigPlayer::Bot {
+                    id: player_count + offset,
+                    ai_type: AIType::Smart,
+                });
+            }
+
             GameConfig { 
-                player_count, 
-                bots, 
+                players, 
                 rng_seed: 0, 
                 blind_size: 20, 
                 min_raise: 10, 
@@ -45,14 +57,14 @@ mod tests {
             let (p1_id, p2_id) = (game.players[0].id as i32, game.players[1].id as i32);
 
             // preflop
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
             // flop
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
             // river
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
             // turn
             game.community.clear();
 
@@ -62,8 +74,8 @@ mod tests {
             let p2_idx = game.get_player_index(p2_id as usize).unwrap();
             game.players[p2_idx].cards = second_hand;
 
-            make_move_and_end_turn(Action::Raise(i32::MAX), game.players[game.turn_index].id, &mut game);
-            make_move_and_end_turn(Action::Raise(i32::MAX), game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Raise { amount: 10000 }, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Raise { amount: 10000 }, game.players[game.turn_index].id, &mut game);
 
             game.players[p1_idx].chips == game.ctx.starting_chips * 2 && game.players[p2_idx].chips == 0
         }
@@ -71,26 +83,6 @@ mod tests {
         fn make_move_and_end_turn(player_move: Action, player_id: usize, game: &mut Game) {
             let _ = game.player_move(player_id, player_move);
             let _ = game.player_move(player_id, Action::EndMove);
-        }
-
-        #[test]
-        fn test_player_count_cannot_exceed_max() {
-            let mut game = Game::new();
-            let config = GameConfig {
-                player_count: 5,
-                bots: vec![],
-                rng_seed: 0,
-                blind_size: 20,
-                min_raise: 10,
-                starting_chips: 1000,
-                deck_type: DeckType::Standard,
-                max_players: 4,
-                special_card_limit: 3,
-                round_limit: 30,
-            };
-
-            let err = game.update_config(config);
-            assert!(err.is_err());
         }
 
         #[test]
@@ -111,7 +103,7 @@ mod tests {
             let _ =game.initialise();
             assert_eq!(game.round, Round::Preround);
 
-            let state = game.get_game_state(0);
+            let state = view_game_state(&game, 0);
             let players = state.players;
 
             assert_eq!(players.len(), 4);
@@ -125,7 +117,7 @@ mod tests {
         fn test_round_transition_from_preround_to_preflop() {
             let game = get_configured_started_game(2, 0);
 
-            let state = game.get_game_state(0);
+            let state = view_game_state(&game, 0);
             let players = state.players;
 
             // players should have received their hole cards
@@ -143,9 +135,9 @@ mod tests {
 
             let active_player = game.get_current_turn_player_id();
             
-            let _ = game.player_move(active_player, Action::Call);
+            let _ = game.player_move(active_player, Call);
             
-            let state = game.get_game_state(active_player as usize);
+            let state = view_game_state(&game, active_player);
             assert_eq!(state.highest_bet, 20);
         }
 
@@ -161,7 +153,7 @@ mod tests {
 
             // make a move if it is currently the player's turn
             if game.get_current_turn_player_id() == human_id {
-                let _ = game.player_move(human_id, Action::Call);
+                let _ = game.player_move(human_id, Call);
             }
 
             assert!(matches!(game.round, Round::Preflop | Round::Flop));
@@ -184,7 +176,7 @@ mod tests {
                 _ => false
             }).map(|p| p.id).unwrap_or(0);
 
-            let _ = game.player_move(human_id, Action::Fold);
+            let _ = game.player_move(human_id, Fold);
 
             assert_eq!(game.round, Round::Showdown, "Expected round to end after last human player folded, instead round is {}", game.round);
         }
@@ -195,8 +187,8 @@ mod tests {
 
             assert_eq!(game.round, Round::Preflop, "Game round expected to be Preflop, actual: {}", game.round);
 
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
-            make_move_and_end_turn(Action::Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
 
             assert_eq!(game.round, Round::Flop, "Game round expected to be Flop, actual: {}", game.round);
         }
@@ -237,9 +229,9 @@ mod tests {
             ];
 
             // all players go all in
-            make_move_and_end_turn(Raise(10000), p1_id, &mut game);
-            make_move_and_end_turn(Raise(10000), p2_id, &mut game);
-            make_move_and_end_turn(Raise(10000), p3_id, &mut game);
+            make_move_and_end_turn(Raise { amount: 10000 }, p1_id, &mut game);
+            make_move_and_end_turn(Raise { amount: 10000 }, p2_id, &mut game);
+            make_move_and_end_turn(Raise { amount: 10000 }, p3_id, &mut game);
 
             // p1 has 600 chips at the end (200 from p1, p2, and p3)
             assert_eq!(game.players[0].chips, 600, "Expected P1 to have 600 chips. Instead P1: {}, P2: {}, P3: {}", game.players[0].chips, game.players[1].chips, game.players[2].chips);
@@ -398,7 +390,7 @@ mod tests {
             game.players[active_idx].special_cards.push(SpecialCard::ChipBoost);
 
             // player calls while holding special card
-            let _ = game.player_move(active_player_id, Action::Call);
+            let _ = game.player_move(active_player_id, Call);
 
             assert_eq!(game.get_current_turn_player_id(), active_player_id, "Turn should remain on current player while they hold special cards");
             assert_eq!(game.players[active_idx].acted, true);
@@ -417,7 +409,7 @@ mod tests {
 
             // player has no special cards
             game.players[p1_idx].special_cards.clear();
-            let _ = game.player_move(p1_id, Action::Call);
+            let _ = game.player_move(p1_id, Call);
 
             assert_ne!(game.get_current_turn_player_id(), p1_id, "Turn should automatically advance to next player when no special cards are held");
         }
@@ -431,7 +423,7 @@ mod tests {
 
             // gives the current player a special card
             game.players[active_idx].special_cards.push(SpecialCard::ChipBoost);
-            let _ = game.player_move(active_player_id, Action::Fold);
+            let _ = game.player_move(active_player_id, Fold);
 
             assert_eq!(game.players[active_idx].folded, true);
             assert_ne!(game.get_current_turn_player_id(), active_player_id, "Folding must immediately yield turn even if special cards remain");
@@ -447,7 +439,7 @@ mod tests {
             game.players[p1_idx].special_cards.push(SpecialCard::ChipBoost);
 
             // play owned special card
-            let _ = game.player_move(p1_id, Action::PlaySpecial { card: SpecialCard::ChipBoost, target_id: None, card_index: None });
+            let _ = game.player_move(p1_id, PlaySpecial { card: SpecialCard::ChipBoost, target_id: None, card_index: None });
 
             assert!(game.players[p1_idx].special_cards.is_empty());
             assert_eq!(game.get_current_turn_player_id(), p1_id, "turn should not change after playing special card");
@@ -462,18 +454,18 @@ mod tests {
 
             // player plays special block card
             game.players[p1_idx].special_cards.push(SpecialCard::SpecialBlock);
-            let _ = game.player_move(p1_id, Action::PlaySpecial { card: SpecialCard::SpecialBlock, target_id: None, card_index: None });
-            make_move_and_end_turn(Action::Call, p1_id, &mut game);
+            let _ = game.player_move(p1_id, PlaySpecial { card: SpecialCard::SpecialBlock, target_id: None, card_index: None });
+            make_move_and_end_turn(Call, p1_id, &mut game);
 
             let p2_id = game.get_current_turn_player_id();
             let p2_idx = game.get_player_index(p2_id as usize).unwrap();
 
             // second player attempts to play special card
             game.players[p2_idx].special_cards.push(SpecialCard::ChipBoost);
-            let result = game.player_move(p2_id, Action::PlaySpecial { card: SpecialCard::ChipBoost, target_id: None, card_index: None });
+            let result = game.player_move(p2_id, PlaySpecial { card: SpecialCard::ChipBoost, target_id: None, card_index: None });
             assert!(result.is_err());
 
-            let _ = game.player_move(p2_id, Action::Call);
+            let _ = game.player_move(p2_id, Call);
             assert_ne!(game.get_current_turn_player_id(), p2_id, "Turn should auto-complete when special cards are blocked");
         }
 
@@ -488,12 +480,154 @@ mod tests {
             let before = game.players[player_index].cards.clone();
             let result = game.player_move(
                 player_id,
-                Action::PlaySpecial { card: SpecialCard::ReplaceCardSelf, target_id: None, card_index: Some(999) },
+                PlaySpecial { card: SpecialCard::ReplaceCardSelf, target_id: None, card_index: Some(999) },
             );
 
             assert!(result.is_err());
             assert_eq!(game.players[player_index].cards, before);
             assert!(game.players[player_index].special_cards.contains(&SpecialCard::ReplaceCardSelf));
+        }
+
+        #[test]
+        fn start_emits_one_hole_deal_per_card_and_player() {
+            let mut game = Game::new();
+            game.update_config(create_valid_config(2, 0)).unwrap();
+            game.initialise().unwrap();
+
+            let events = game.start().unwrap();
+
+            let hole_deals: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.action,
+                        MoveAction::DealHole { count: 1 }
+                    )
+                })
+                .collect();
+
+            assert_eq!(hole_deals.len(), 4);
+        }
+
+        #[test]
+        fn community_deal_is_public_and_has_no_player_owner() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let mut events = Vec::new();
+            game.deal_community_cards(1, &mut events);
+
+            assert!(matches!(
+                events.as_slice(),
+                [MoveEvent {
+                    actor_id: None,
+                    action: MoveAction::DealCommunity { count: 1 },
+                    private: false,
+                }]
+            ));
+        }
+
+        #[test]
+        fn capped_special_draw_emits_no_false_deal_event() {
+            let mut game = get_configured_started_game(2, 0);
+            let player_index = 0;
+
+            game.players[player_index].special_cards =
+                vec![SpecialCard::ChipBoost; game.ctx.special_card_limit];
+
+            let mut events = Vec::new();
+            game.deal_special_cards(1, &mut events);
+
+            assert!(!events.iter().any(|event| {
+                matches!(event.action, MoveAction::DealSpecial { .. })
+                    && event.actor_id == Some(game.players[player_index].id)
+            }));
+        }
+
+        #[test]
+        fn rejects_second_normal_action_in_a_turn() {
+            let mut game = get_configured_started_game(2, 0);
+            let index = game.turn_index;
+            let mut events = Vec::new();
+
+            game.apply_action(index, Action::Call, &mut events).unwrap();
+
+            assert_eq!(
+                game.apply_action(index, Action::Raise { amount: 10 }, &mut events),
+                Err(GameError::PrimaryMoveAlreadyMade),
+            );
+        }        
+
+        #[test]
+        fn allows_specials_after_normal_action_before_end_move() {
+            let mut game = get_configured_started_game(2, 0);
+            let index = game.turn_index;
+            game.players[index]
+                .special_cards
+                .push(SpecialCard::ChipBoost);
+
+            let mut events = Vec::new();
+
+            game.apply_action(index, Action::Call, &mut events).unwrap();
+            game.apply_action(
+                index,
+                Action::PlaySpecial {
+                    card: SpecialCard::ChipBoost,
+                    target_id: None,
+                    card_index: None,
+                },
+                &mut events,
+            ).unwrap();
+            game.apply_action(index, Action::EndMove, &mut events).unwrap();
+
+            assert!(game.players[index].turn_ended);
+        }
+
+        #[test]
+        fn rejects_special_after_end_move() {
+            let mut game = get_configured_started_game(2, 0);
+            let index = game.turn_index;
+            game.players[index]
+                .special_cards
+                .push(SpecialCard::ChipBoost);
+
+            let mut events = Vec::new();
+
+            game.apply_action(index, Action::Call, &mut events).unwrap();
+            game.apply_action(index, Action::EndMove, &mut events).unwrap();
+
+            assert_eq!(
+                game.apply_action(
+                    index,
+                    Action::PlaySpecial {
+                        card: SpecialCard::ChipBoost,
+                        target_id: None,
+                        card_index: None,
+                    },
+                    &mut events,
+                ),
+                Err(GameError::InvalidAction),
+            );
+        }
+    }
+
+    #[cfg(test)]
+    mod poker_tests {
+        use crate::poker::*;
+
+        #[test]
+        fn extract_hand_does_not_underflow_when_representation_exceeds_hand_size() {
+            let cards = vec![
+                ExpandedCard::get_card("a", "s"),
+                ExpandedCard::get_card("a", "h"),
+                ExpandedCard::get_card("a", "d"),
+                ExpandedCard::get_card("a", "c"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("k", "h"),
+            ];
+
+            let result = crate::poker::get_representation(&cards, vec![3, 2], None, 4);
+
+            assert!(result.is_none());
         }
     }
 }

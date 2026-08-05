@@ -19,11 +19,24 @@ interface LobbyConfig {
     blindSize: number | '';
     minRaise: number | '';
     startingChips: number | '';
+    specialCardLimit: number | '';
     deckType: string;
     turnTimeout: number | '';
     isPrivate: boolean;
+    roundLimit: number | '';
 }
+type AIType = "Risky" | "Safe" | "Smart" | "Random";
 
+export const DECK_OPTIONS = [
+    { value: "standard", label: "Standard (52)" },
+    { value: "restricted", label: "Restricted (40)" },
+    { value: "double", label: "Double Deck (104)" },
+    { value: "half", label: "Half Deck (26)" },
+    { value: "onejokerstandard", label: "1 Joker (53)" },
+    { value: "twojokerstandard", label: "2 Jokers (54)" },
+] as const;
+
+export type DeckType = typeof DECK_OPTIONS[number]['value'];
 type MainView = 'lobby' | 'configure';
 type LeftPanelMode = 'overview' | 'add-bot';
 
@@ -49,15 +62,17 @@ export function Lobby() {
         blindSize: 10,
         minRaise: 20,
         startingChips: 1000,
+        specialCardLimit: 3,
         deckType: "standard",
         turnTimeout: 30,
-        isPrivate: false
+        isPrivate: false,
+        roundLimit: 30,
     });
 
     const [botToAdd, setBotToAdd] = useState<string>("Smart");
     const isHost = players.find(p => p.id === myId)?.isHost || false;
 
-useEffect(() => {
+    useEffect(() => {
         if (!socket || !isConnected) {
             showToast("Disconnected from server", "error");
             navigate('/');
@@ -68,14 +83,10 @@ useEffect(() => {
 
         const handleLobbyUpdate = (data: { players: Player[], config: LobbyConfig, round?: string }) => {
             setPlayers(data.players);
-            
+
             const me = data.players.find(p => p.id === myIdRef.current);
             if (!me?.isHost) {
                 setConfig(data.config);
-            }
-
-            if (data.round && data.round !== "room") {
-                navigate(`/game/${roomId}`);
             }
         };
 
@@ -94,7 +105,7 @@ useEffect(() => {
         const handleSuccess = (data: string) => showToast(`${data}`, "success");
         const handleError = (data: string) => showToast(`${data}`, "error");
         const handleInfo = (data: string) => showToast(`${data}`, "info");
-        
+
         const handleHostPromote = (data: { playerId: number }) => {
             if (data.playerId === myIdRef.current) {
                 showToast("You have been promoted to host", "info");
@@ -128,9 +139,10 @@ useEffect(() => {
 
     const updateConfig = (key: keyof LobbyConfig, value: string | number | boolean) => {
         if (!isHost || !socket) return;
+
         const newConfig = { ...config, [key]: value };
         setConfig(newConfig);
-        socket.emit("updateConfig", { roomId, config: newConfig });
+        socket.emit("updateConfig", { roomId, config: JSON.stringify(newConfig) });
     };
 
     const addBot = () => {
@@ -138,7 +150,7 @@ useEffect(() => {
         if (players.length >= (Number(config.maxPlayers) || 0)) {
             return showToast("Lobby is full", "warning");
         }
-        socket.emit("addBot", { roomId, botType: botToAdd });
+        socket.emit("addBot", { roomId, botType: botToAdd as AIType });
     };
 
     const kickPlayer = (playerId: number) => {
@@ -166,8 +178,8 @@ useEffect(() => {
         <div className={styles.container}>
             <div className={styles.canvasPlaceholder} />
 
-            <PixelBox 
-                className={styles.lobbyOuter} 
+            <PixelBox
+                className={styles.lobbyOuter}
                 innerClassName={styles.lobbyInner}
                 borderColour={boxBorderColour}
                 backgroundColour="#2b2b36"
@@ -206,6 +218,10 @@ useEffect(() => {
                                             <span className={styles.summaryVal}>{config.startingChips || 0}</span>
                                         </div>
                                         <div className={styles.summaryRow}>
+                                            <span className={styles.summaryKey}>Special Card Limit:</span>
+                                            <span className={styles.summaryVal}>{config.specialCardLimit || 0}</span>
+                                        </div>
+                                        <div className={styles.summaryRow}>
                                             <span className={styles.summaryKey}>Small Blind:</span>
                                             <span className={styles.summaryVal}>{config.blindSize || 0}</span>
                                         </div>
@@ -216,6 +232,10 @@ useEffect(() => {
                                         <div className={styles.summaryRow}>
                                             <span className={styles.summaryKey}>Turn Timeout:</span>
                                             <span className={styles.summaryVal}>{config.turnTimeout || 0}s</span>
+                                        </div>
+                                        <div className={styles.summaryRow}>
+                                            <span className={styles.summaryKey}>Round Limit:</span>
+                                            <span className={styles.summaryVal}>{config.roundLimit || 0}</span>
                                         </div>
                                     </div>
 
@@ -243,7 +263,7 @@ useEffect(() => {
                                                 <label>Bot Type</label>
                                                 <div className={styles.inputOuter}>
                                                     <PixelBox innerClassName={styles.inputInner} borderColour={boxBorderColour}>
-                                                        <select 
+                                                        <select
                                                             className={styles.formControl}
                                                             value={botToAdd}
                                                             onChange={(e) => setBotToAdd(e.target.value)}
@@ -279,7 +299,7 @@ useEffect(() => {
                             <h2 className={styles.panelTitle}>
                                 Players ({players.length}/{Math.max(Math.min(Number(config.maxPlayers) || 0, 8), 2)})
                             </h2>
-                            
+
                             <div className={styles.playerList}>
                                 {players.map((player) => (
                                     <div key={player.id} className={styles.playerItem}>
@@ -291,7 +311,7 @@ useEffect(() => {
                                                 {player.isHost ? "Host" : player.isBot ? "Bot" : "Player"}
                                             </span>
                                         </div>
-                                        
+
                                         {isHost && player.id !== myId && (
                                             <div className={styles.playerActions}>
                                                 {!player.isBot && (
@@ -318,7 +338,7 @@ useEffect(() => {
                                         Leave Lobby
                                     </PixelBox>
                                 </button>
-                                
+
                                 {isHost && (
                                     <button type="button" className={styles.btnWrapper} onClick={startGame}>
                                         <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
@@ -343,7 +363,7 @@ useEffect(() => {
                                         <label>Privacy</label>
                                         <div className={styles.inputOuter}>
                                             <PixelBox innerClassName={styles.inputInner} borderColour={boxBorderColour}>
-                                                <select 
+                                                <select
                                                     className={styles.formControl}
                                                     value={config.isPrivate ? "private" : "public"}
                                                     onChange={(e) => updateConfig("isPrivate", e.target.value === "private")}
@@ -356,10 +376,10 @@ useEffect(() => {
                                     </div>
 
 
-                                    <NumberSetting 
-                                        label="Player Capacity" range="2-8" 
-                                        value={config.maxPlayers} min={2} max={8} 
-                                        onChange={(val) => updateConfig("maxPlayers", val)} 
+                                    <NumberSetting
+                                        label="Player Capacity" range="2-8"
+                                        value={config.maxPlayers} min={2} max={8}
+                                        onChange={(val) => updateConfig("maxPlayers", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
 
@@ -367,26 +387,25 @@ useEffect(() => {
                                         <label>Deck Type</label>
                                         <div className={styles.inputOuter}>
                                             <PixelBox innerClassName={styles.inputInner} borderColour={boxBorderColour}>
-                                                <select 
+                                                <select
                                                     className={styles.formControl}
                                                     value={config.deckType}
-                                                    onChange={(e) => updateConfig("deckType", e.target.value)}
+                                                    onChange={(e) => updateConfig("deckType", e.target.value as DeckType)}
                                                 >
-                                                    <option value="standard">Standard (52)</option>
-                                                    <option value="restricted">Restricted (40)</option>
-                                                    <option value="double">Double Deck (104)</option>
-                                                    <option value="half">Half Deck (26)</option>
-                                                    <option value="1joker">1 Joker (53)</option>
-                                                    <option value="2jokers">2 Jokers (54)</option>
+                                                    {DECK_OPTIONS.map((opt) => (
+                                                        <option key={opt.value} value={opt.value}>
+                                                            {opt.label}
+                                                        </option>
+                                                    ))}
                                                 </select>
                                             </PixelBox>
                                         </div>
                                     </div>
 
-                                    <NumberSetting 
-                                        label="Turn Timeout (s)" range="10-120" 
-                                        value={config.turnTimeout} min={10} max={120} 
-                                        onChange={(val) => updateConfig("turnTimeout", val)} 
+                                    <NumberSetting
+                                        label="Turn Timeout (s)" range="10-120"
+                                        value={config.turnTimeout} min={10} max={120}
+                                        onChange={(val) => updateConfig("turnTimeout", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
                                 </div>
@@ -396,24 +415,38 @@ useEffect(() => {
                                 <div className={styles.columnGroup}>
                                     <span className={styles.columnHeader}>Stakes</span>
 
-                                    <NumberSetting 
-                                        label="Starting Chips" range="100-10000" 
-                                        value={config.startingChips} min={100} max={10000} step={100} 
-                                        onChange={(val) => updateConfig("startingChips", val)} 
+                                    <NumberSetting
+                                        label="Starting Chips" range="100-10000"
+                                        value={config.startingChips} min={100} max={10000} step={100}
+                                        onChange={(val) => updateConfig("startingChips", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
 
-                                    <NumberSetting 
-                                        label="Small Blind" range="0-200" 
-                                        value={config.blindSize} min={0} max={200} step={5} 
-                                        onChange={(val) => updateConfig("blindSize", val)} 
+                                    <NumberSetting
+                                        label="Small Blind" range="0-200"
+                                        value={config.blindSize} min={0} max={200} step={5}
+                                        onChange={(val) => updateConfig("blindSize", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
 
-                                    <NumberSetting 
-                                        label="Minimum Raise" range="1-200" 
-                                        value={config.minRaise} min={1} max={200} step={5} 
-                                        onChange={(val) => updateConfig("minRaise", val)} 
+                                    <NumberSetting
+                                        label="Minimum Raise" range="1-200"
+                                        value={config.minRaise} min={1} max={200} step={5}
+                                        onChange={(val) => updateConfig("minRaise", val)}
+                                        styles={styles} boxBorderColour={boxBorderColour}
+                                    />
+
+                                    <NumberSetting
+                                        label="Round Limit" range="5-100"
+                                        value={config.roundLimit} min={5} max={100} step={1}
+                                        onChange={(val) => updateConfig("roundLimit", val)}
+                                        styles={styles} boxBorderColour={boxBorderColour}
+                                    />
+
+                                    <NumberSetting
+                                        label="Special Card Limit" range="0-10"
+                                        value={config.specialCardLimit} min={0} max={10} step={1}
+                                        onChange={(val) => updateConfig("specialCardLimit", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
                                 </div>

@@ -20,6 +20,18 @@ interface GameConfig {
     roundLimit: number;
 }
 
+interface EngineConfig {
+    players: ConfigPlayer[];
+    rngSeed: number;
+    blindSize: number;
+    minRaise: number;
+    startingChips: number;
+    specialCardLimit: number;
+    deckType: string;
+    maxPlayers: number;
+    roundLimit: number; 
+}
+
 interface Player {
     id: number;
     name: string;
@@ -29,9 +41,26 @@ interface Player {
 }
 
 interface MoveEvent {
-    playerId: number;
-    action: string;
+    actorId: number | null;
+    private: boolean;
+    action: unknown;
 }
+
+interface ErrorResponse {
+    responseType: "warning" | "error";
+    message: string;
+}
+
+interface MoveResult {
+    events: MoveEvent[],
+    gameState: unknown,
+}
+
+type ConfigPlayer =
+    | { type: "human"; id: number }
+    | { type: "bot"; id: number; aiType: AIType };
+
+type AIType = "Risky" | "Safe" | "Smart" | "Random";
 
 interface RoomData {
     game: GameAPI;
@@ -67,8 +96,8 @@ const clamp = (value: number, min: number, max: number) => {
     return Math.min(Math.max(value, min), max);
 }
 
-const isError = (value: any) => {
-    return value.response_type;
+const isError = (value: ErrorResponse | MoveResult): value is ErrorResponse => {
+    return "responseType" in value
 }
 
 /**
@@ -118,7 +147,7 @@ const configBounds: ConfigDict = {
     "minRaise": [1, 200],
     "startingChips": [100, 10000],
     "specialCardLimit": [0, 10],
-    "roundLimit": [1, 50],
+    "roundLimit": [1, 100],
 }
 
 const clampValue = (value: any, boundName: string) => {
@@ -134,31 +163,29 @@ const clampValue = (value: any, boundName: string) => {
 function updateGameConfig(room: RoomData) {
     if (room.game.get_round() !== "room") return;
 
-    const bots = room.players.filter(p => p.isBot).map(p => p.botType!);
-    const humanCount = room.players.filter(p => !p.isBot).length;
+    const blindSize = clampValue(room.config.blindSize, "blindSize") ?? room.config.blindSize;
+    const minRaise = clampValue(room.config.minRaise, "minRaise") ?? room.config.minRaise;
+    const startingChips = clampValue(room.config.startingChips, "startingChips") ?? room.config.startingChips;
+
+    const newConfig: EngineConfig = {
+        players: buildPlayerList(room),
+        rngSeed: Date.now(), 
+        blindSize,
+        minRaise,
+        startingChips,
+        specialCardLimit: room.config.specialCardLimit,
+        deckType: room.config.deckType,
+        maxPlayers: room.config.maxPlayers,
+        roundLimit: room.config.roundLimit,
+    }
 
     try {
-        const blind_size = clampValue(room.config.blindSize, "blindSize") ?? room.config.blindSize;
-        const min_raise = clampValue(room.config.minRaise, "minRaise") ?? room.config.minRaise;
-        const starting_chips = clampValue(room.config.startingChips, "startingChips") ?? room.config.startingChips;
-
-        const args = JSON.stringify({
-            player_count: humanCount,
-            bots: bots,
-            rng_seed: Date.now(), 
-            blind_size,
-            min_raise,
-            starting_chips,
-            special_card_limit: room.config.specialCardLimit,
-            deck_type: room.config.deckType,
-            max_players: room.config.maxPlayers,
-            round_limit: room.config.roundLimit,
-        });
-
-        return room.game.update_config(args);
+        const rawResponse = room.game.update_config(JSON.stringify(newConfig));
+        if (rawResponse === "") return;
+        const response = JSON.parse(rawResponse) as ErrorResponse;
+        if (response && isError(response)) console.error("Config update warning:", response.message);
     } catch (e) {
-        io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to update game configuration");
-        return;
+        console.error("Failed to update engine config:", e);
     }
 }
 
@@ -186,7 +213,7 @@ function turnTimeout(roomId: string, game: GameAPI, limit: number) {
 
         if (isError(response)) {
             io.to(roomId).emit(
-                response.response_type,
+                response.responseType,
                 response.message
             );
 
@@ -277,21 +304,59 @@ function broadcastGameState(room: RoomData, events: MoveEvent[] = []) {
         if (!session) continue;
 
         try {
-            const gameState = JSON.parse(room.game.get_game_state(session.playerId));
-            if (isError(gameState)) {
-                return io.to(session.socketId).emit(
-                    gameState.response_type, 
-                    gameState.message
+            const response = JSON.parse(room.game.get_game_state(session.playerId)) as MoveResult | ErrorResponse;
+            if (isError(response)) {
+                io.to(session.socketId).emit(
+                    response.responseType, 
+                    response.message
                 );
+            } else {
+                io.to(session.socketId).emit("gameUpdate", {
+                    events: viewableEvents(session.playerId, events),
+                    gameState: response.gameState
+                });
             }
-
-            io.to(session.socketId).emit("gameUpdate", {
-                events,
-                game_state: gameState
-            });
         } catch (e) {
             io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to broadcast game state");
         }
+    }
+}
+
+function viewableEvents(viewerId: number, events: MoveEvent[] = []): MoveEvent[] {
+    return events.filter(
+        (event) => !event.private || event.actorId === viewerId,
+    );
+}
+
+function buildPlayerList(room: RoomData): ConfigPlayer[] {
+    return room.players.map((player) => {
+        if (player.isBot) {
+            return { type: "bot", id: player.id, aiType: player.botType as AIType || "Smart" };
+        } else {
+            return { type: "human", id: player.id };
+        }
+    });
+}
+
+function getCompleteConfig(config: any): GameConfig | undefined {
+    try {
+        const parsedConfig = typeof config === "string" ? JSON.parse(config) : config;
+
+        const gameConfig: GameConfig = {
+            maxPlayers: parsedConfig.maxPlayers || 4,
+            blindSize: parsedConfig.blindSize || 20,
+            minRaise: parsedConfig.minRaise || 10,
+            startingChips: parsedConfig.startingChips || 1000,
+            specialCardLimit: parsedConfig.specialCardLimit || 3,
+            deckType: parsedConfig.deckType || "standard",
+            turnTimeout: parsedConfig.turnTimeout || 40,
+            isPrivate: parsedConfig.isPrivate || false,
+            roundLimit: parsedConfig.roundLimit || 30,
+        };
+
+        return gameConfig;
+    } catch (e) {
+        return undefined;
     }
 }
 
@@ -309,7 +374,7 @@ io.on("connection", (socket: Socket) => {
                         let response = JSON.parse(room.game.toggle_id_with_bot(session.playerId, true));
                         if (isError(response)) {
                             return socket.emit(
-                                response.response_type, 
+                                response.responseType, 
                                 response.message
                             );
                         
@@ -345,62 +410,57 @@ io.on("connection", (socket: Socket) => {
     });
 
     socket.on("createGame", (configStr: string) => {
+        const parsedConfig = getCompleteConfig(configStr);
+        if (!parsedConfig) return socket.emit("error", "Failed to create game - could not parse config");
+        const roomId = Math.random().toString(36).substring(2, 5);
+        const sessionToken = generateSessionToken();
+
+        const hostPlayer: Player = {
+            id: 0,
+            name: "Player 0",
+            isHost: true,
+            isBot: false
+        };
+
+        const room: RoomData = {
+            game: new GameAPI(),
+            config: parsedConfig,
+            players: [hostPlayer],
+            activeConnections: 1,
+            roomHostSession: sessionToken,
+            sessionTokens: [sessionToken],
+            roomId
+        };
+
         try {
-            const parsedConfig = JSON.parse(configStr);
-            const roomId = Math.random().toString(36).substring(2, 5);
-            const sessionToken = generateSessionToken();
-
-            const hostPlayer: Player = {
-                id: 0,
-                name: "Player 0",
-                isHost: true,
-                isBot: false
-            };
-
-            const room: RoomData = {
-                game: new GameAPI(),
-                config: {
-                    maxPlayers: parsedConfig.maxPlayers || 4,
-                    blindSize: parsedConfig.blindSize || 20,
-                    minRaise: parsedConfig.minRaise || 10,
-                    startingChips: parsedConfig.startingChips || 1000,
-                    specialCardLimit: parsedConfig.specialCardLimit || 3,
-                    deckType: parsedConfig.deckType || "standard",
-                    turnTimeout: parsedConfig.turnTimeout || 40,
-                    isPrivate: parsedConfig.isPrivate || false,
-                    roundLimit: parsedConfig.roundLimit || 30,
-                },
-                players: [hostPlayer],
-                activeConnections: 1,
-                roomHostSession: sessionToken,
-                sessionTokens: [sessionToken],
-                roomId
-            };
-
-            try {
-                room.game.init_panic_hook();
-            } catch (e) {}
+            room.game.init_panic_hook();
+            updateGameConfig(room);
 
             roomMap.set(roomId, room);
             socketSessionMap.set(socket.id, sessionToken);
             sessionMap.set(sessionToken, { roomId, playerId: 0, socketId: socket.id });
 
-            updateGameConfig(room);
-
             socket.join(roomId);
-            socket.emit("gameCreated", { roomId });
+            socket.emit("gameCreated", { roomId, sessionToken });
             broadcastLobbyUpdate(room);
-
             console.log(`Created game, id: ${roomId}`);
-        } catch (e) {
+        } catch (error) {
+            roomMap.delete(roomId);
+            socketSessionMap.delete(socket.id);
+            sessionMap.delete(sessionToken);
+
+            console.error("Game creation configuration failed", {roomId, error, parsedConfig});
+
             socket.emit("error", "Failed to create game due to bad configuration");
         }
     });
 
-    socket.on("addBot", (data: { roomId: string, botType: string }) => {
+    socket.on("addBot", (data: { roomId: string, botType: AIType }) => {
         withGameContext(socket, true, (room) => {
             if (room.players.length >= room.config.maxPlayers) {
                 return socket.emit("warning", "Cannot add bot as lobby is already full");
+            } else if (!data.botType) {
+                return socket.emit("error", "Invalid bot");
             }
 
             const newId = room.players.length > 0 ? Math.max(...room.players.map(p => p.id)) + 1 : 0;
@@ -426,20 +486,19 @@ io.on("connection", (socket: Socket) => {
 
     socket.on("updateConfig", (data: { roomId: string, config: any }) => {
         withGameContext(socket, true, (room) => {
-            try {
-                room.config.maxPlayers = clampValue(data.config.maxPlayers, "maxPlayers") ?? room.config.maxPlayers;
-                room.config.isPrivate = data.config.isPrivate ?? room.config.isPrivate;
-                room.config.turnTimeout = clampValue(data.config.turnTimeout, "turnTimeout") ?? room.config.turnTimeout;
-                room.config.blindSize = clampValue(data.config.blindSize, "blindSize") ?? room.config.blindSize;
-                room.config.minRaise = clampValue(data.config.minRaise, "minRaise") ?? room.config.minRaise;
-                room.config.startingChips = clampValue(data.config.startingChips, "startingChips") ?? room.config.startingChips;
-                room.config.deckType = data.config.deckType || room.config.deckType;
+            const gameConfig = getCompleteConfig(data.config);
+            if (!gameConfig) return socket.emit("error", "Configuration could not be parsed");
 
-                updateGameConfig(room);
-                broadcastLobbyUpdate(room);
-            } catch (e) {
-                socket.emit("error", "Configuration could not be parsed");
-            }
+            room.config.maxPlayers = clampValue(gameConfig.maxPlayers, "maxPlayers") ?? room.config.maxPlayers;
+            room.config.isPrivate = gameConfig.isPrivate ?? true;
+            room.config.turnTimeout = clampValue(gameConfig.turnTimeout, "turnTimeout") ?? 30;
+            room.config.blindSize = clampValue(gameConfig.blindSize, "blindSize") ?? room.config.blindSize;
+            room.config.minRaise = clampValue(gameConfig.minRaise, "minRaise") ?? room.config.minRaise;
+            room.config.startingChips = clampValue(gameConfig.startingChips, "startingChips") ?? room.config.startingChips;
+            room.config.deckType = gameConfig.deckType ?? room.config.deckType ?? "standard";
+
+            updateGameConfig(room);
+            broadcastLobbyUpdate(room);
         });
     });
 
@@ -518,7 +577,49 @@ io.on("connection", (socket: Socket) => {
 
                 room.players.splice(replacedIndex, 1);
                 try {
-                    room.game.force_remove_player(replacedBot.id);
+                    const oldPlayers = room.players;
+                    const oldActiveConnections = room.activeConnections;
+
+                    try {
+                        const replacedIndex = room.players.map((p) => p.isBot).lastIndexOf(true);
+
+                        if (replacedIndex !== -1) room.players = room.players.filter((_, index) => index !== replacedIndex);
+                        const newId = room.players.length > 0 ? Math.max(...room.players.map((p) => p.id)) + 1 : 0;
+
+                        room.players = [
+                            ...room.players,
+                            {
+                                id: newId,
+                                name: `Player ${newId}`,
+                                isHost: humanCount === 0,
+                                isBot: false,
+                            },
+                        ];
+
+                        updateGameConfig(room);
+                        adjustConnections(room, 1);
+
+                        const sessionToken = generateSessionToken();
+                        socketSessionMap.set(socket.id, sessionToken);
+                        sessionMap.set(sessionToken, { roomId, playerId: newId, socketId: socket.id });
+
+                        room.sessionTokens.push(sessionToken);
+                        socket.join(roomId);
+                        socket.emit("joinSuccess", { roomId, sessionToken });
+                        broadcastLobbyUpdate(room);
+                    } catch (error) {
+                        room.players = oldPlayers;
+                        room.activeConnections = oldActiveConnections;
+
+                        try {
+                            updateGameConfig(room);
+                        } catch (restoreError) {
+                            console.error("Failed to restore game after join failure", restoreError);
+                        }
+
+                        console.error("Join configuration failed", { roomId, error });
+                        socket.emit("error", "Failed to communicate join with server");
+                    }
                 } catch (e) {}
             }
         }
@@ -616,7 +717,13 @@ io.on("connection", (socket: Socket) => {
                 round: room.game.get_round() 
             });
             try {
-                const playerState = JSON.parse(room.game.get_game_state(session.playerId));
+                const playerState = JSON.parse(room.game.get_game_state(session.playerId)) as MoveResult | ErrorResponse;
+
+                if (isError(playerState)) {
+                    socket.emit(playerState.responseType, playerState.message);
+                    return;
+                }
+
                 socket.emit("gameUpdate", playerState);
             } catch (e) {}
         });
@@ -647,8 +754,14 @@ io.on("connection", (socket: Socket) => {
             room.sessionTokens.push(sessionToken);
         } else {
             try {
-                let response = room.game.toggle_id_with_bot(session.playerId, false);
-                io.to(session.roomId).emit("gameUpdate", response);
+                let response = JSON.parse(room.game.toggle_id_with_bot(session.playerId, false)) as MoveResult | ErrorResponse;
+                
+                if (isError(response)) {
+                    socket.emit(response.responseType, response.message);
+                    return;
+                }
+
+                broadcastGameState(room, response.events);
             } catch (e) {
                 socket.emit("error", "An unexpected error occurred while attempting to reconnect to the previous game session");
             }
@@ -669,17 +782,22 @@ io.on("connection", (socket: Socket) => {
                 const initialiseResult = JSON.parse(room.game.initialise());
                 if (isError(initialiseResult)) {
                     return io.to(session.socketId).emit(
-                        initialiseResult.response_type, 
+                        initialiseResult.responseType, 
                         initialiseResult.message
                     );
                 }
 
                 io.to(session.roomId).emit("gameStart", initialiseResult);
                 broadcastGameState(room, initialiseResult.events);
-                turnTimeout(session.roomId, room.game, room.config.turnTimeout * 1000);
             } catch (e) {
                 io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to initialise the room");
             }
+        });
+    });
+
+    socket.on("getGameConfig", () => {
+        withGameContext(socket, false, (room) => {
+            socket.emit("gameConfig", room.config);
         });
     });
 
@@ -688,7 +806,7 @@ io.on("connection", (socket: Socket) => {
             try {
                 // preround -> preflop
                 const startResult = JSON.parse(room.game.start());
-                if (isError(startResult)) return socket.emit(startResult.response_type, startResult.message);
+                if (isError(startResult)) return socket.emit(startResult.responseType, startResult.message);
 
                 io.to(session.roomId).emit("gameStarted");
                 broadcastGameState(room, startResult.events);
@@ -700,17 +818,15 @@ io.on("connection", (socket: Socket) => {
         });
     });
 
-    socket.on("playerMove", (moveData: { action: string }) => {
+    socket.on("playerMove", (moveData: string) => {
         withGameContext(socket, false, (room, session) => {
             try {
-                const moveResultStr = room.game.player_move(
+                const moveResult = JSON.parse(room.game.player_move(
                     session.playerId, 
-                    moveData.action
-                );
+                    moveData
+                )) as MoveResult | ErrorResponse;
 
-                const moveResult = JSON.parse(moveResultStr);
-
-                if (isError(moveResult)) return socket.emit(moveResult.response_type, moveResult.message);
+                if (isError(moveResult)) return socket.emit(moveResult.responseType, moveResult.message);
 
                 broadcastGameState(room, moveResult.events);
                 turnTimeout(

@@ -66,7 +66,7 @@ export const NumberSetting = ({
         <div className={styles.formGroup} style={{ flex: 1 }}>
             {label !== '' &&
                 <label>
-                    {label} { range !== '' && <span style={{ fontFamily: '"Tiny5", sans-serif', fontSize: '0.6em', opacity: 0.8 }}>({range})</span> }
+                    {label} { range !== '' && <span style={{ fontFamily: '"Minecraft", "Pixeloid Sans", sans-serif', fontSize: '0.6em', opacity: 0.8 }}>({range})</span> }
                 </label>
             }
             <div className={styles.inputOuter}>

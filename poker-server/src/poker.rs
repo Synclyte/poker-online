@@ -7,22 +7,21 @@ use std::{cmp::{Ordering::{self, Equal, Greater, Less}}, fmt::{self, Debug}};
 use serde::Serialize;
 
 #[derive(Clone, Copy, PartialEq, PartialOrd, Ord, Eq, Debug)]
-#[repr(u8)]
 pub(crate) enum Rank {
-    None = 0,
-    Two = 1,
-    Three = 2,
-    Four = 3,
-    Five = 4, 
-    Six = 5,
-    Seven = 6,
-    Eight = 7,
-    Nine = 8,
-    Ten = 9,
-    Jack = 10,
-    Queen = 11,
-    King = 12,
-    Ace = 13
+    None,
+    Two,
+    Three,
+    Four,
+    Five, 
+    Six,
+    Seven,
+    Eight,
+    Nine,
+    Ten,
+    Jack,
+    Queen,
+    King,
+    Ace,
 }
 impl std::fmt::Display for Rank {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -143,7 +142,7 @@ impl Suit {
             "d" => Suit::Diamonds,
             "c" => Suit::Clubs,
             "h" => Suit::Hearts,
-            "n" | _ => Suit::Suitless,
+            _ => Suit::Suitless,
         }
     }
 }
@@ -394,17 +393,14 @@ impl HandContext<'_> {
             }
         }
 
-        // get spare cards to populate remainder of hand
+        // get spare cards to populate remainder of hand, selecting the best ranks
         let representation_card_len = representation_cards.iter().fold(0, |acc, (_, v)| acc + v.len());
         let cards_needed = hand_size - representation_card_len;
-        let mut card_iter = available_cards.iter().enumerate();
-        let mut extra_cards: Vec<ExpandedCard> = Vec::with_capacity(cards_needed);
-        for _ in 0..cards_needed {
-            if let Some(next_index) = card_iter.find_map(|(i, available)| if *available { Some(i) } else { None }) {
-                extra_cards.push(self.cards[next_index]);
-            }
-        }
-        extra_cards.sort_by(|a, b| b.cmp(a));
+        let mut candidates: Vec<ExpandedCard> = available_cards.iter().enumerate()
+            .filter_map(|(i, available)| if *available { Some(self.cards[i]) } else { None })
+            .collect();
+        candidates.sort_by(|a, b| b.cmp(a));
+        let extra_cards: Vec<ExpandedCard> = candidates.into_iter().take(cards_needed).collect();
         
         Some((hand_cards, extra_cards))
     }
@@ -526,7 +522,7 @@ impl Ord for Hand {
  * Returns the cards which match the given representation and suit and the best remaining cards in hand, otherwise returns None
  * Works greedily - will always select the highest ranked cards matching a representation first
  */
-fn get_representation(
+pub(crate) fn get_representation(
     cards: &Vec<ExpandedCard>, 
     representation: Vec<usize>, 
     suit: Option<Suit>, 
