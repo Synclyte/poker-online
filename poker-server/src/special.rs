@@ -6,7 +6,7 @@ use std::fmt;
 use rand::RngExt;
 use serde::Serialize;
 
-use crate::{ExpandedCard, Game, GameError, HandType, MoveEvent, Rank, Round, Suit, MoveAction};
+use crate::{ExpandedCard, Game, GameError, HandType, MoveAction, MoveEvent, Rank, Suit, poker::Hand};
 
 #[derive(Default, Clone)]
 pub(crate) struct RoundModifiers {
@@ -223,6 +223,7 @@ pub(crate) enum DrawRule {
     HigherThanLast,
     LowerThanLast,
     SameSuitAsLast,
+    Nothing,
 }
 impl DrawRule {
     pub(crate) fn match_fn(&self, game: &Game) -> Box<dyn Fn(&ExpandedCard) -> bool + 'static> {
@@ -245,7 +246,8 @@ impl DrawRule {
             DrawRule::SameSuitAsLast => {
                 let last_suit = game.community.last().map_or(Suit::Suitless, |community| community.card().suit);
                 Box::new(move |c| c.card().suit == last_suit || matches!(c, ExpandedCard::Joker(_)))
-            }
+            },
+            DrawRule::Nothing => Box::new(|_| false),
         }
     }
 }
@@ -349,8 +351,9 @@ pub(crate) enum SpecialCard {
     InvalidateTwoPair,
     InvalidateFullHouse,
     Special, // grants a few special cards. not obtainable through normal draws
-    Discard, // discards all community cards
+    Discard, // prevents any more community cards from being drawn this round
     HandSwap, // swap hands with a given opponent. fails (but still consumes the card) if their hand is better
+    Joker, // convert selected community card into a joker
 }
 impl fmt::Display for SpecialCard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -362,11 +365,12 @@ impl SpecialCard {
         let t_id = target_id.unwrap_or(usize::MAX);
         let c_index = card_index.unwrap_or(usize::MAX);
 
-        if player_id != usize::MAX && game.get_player_index(player_id).is_err() {
-            return Err(GameError::InvalidTargetPlayer);
-        }
-
-        if t_id != usize::MAX && game.get_player_index(t_id).is_err() {
+        let t_idx_res = game.get_player_index(t_id);
+        // reject if invalid player id, invalid target id, or target is folded
+        if player_id != usize::MAX && game.get_player_index(player_id).is_err()
+            || t_id != usize::MAX && t_idx_res.is_err()
+            || t_idx_res.is_ok_and(|idx| game.players[idx].folded)
+        {
             return Err(GameError::InvalidTargetPlayer);
         }
 
@@ -402,7 +406,7 @@ impl SpecialCard {
                 if c_index >= game.community.len() { return Err(GameError::CardIndexInvalid) }
                 let card = game.pop_next_deck_card();
                 // this operation should never fail, as the validity of the index has already been checked
-                game.replace_community_card(c_index, card, events).map_err(|_| unreachable!());
+                game.replace_community_card(c_index, card, events)?;
             },
             SpecialCard::RemoveCardCommunity => {
                 game.remove_community_card(c_index, events)?;
@@ -444,7 +448,9 @@ impl SpecialCard {
                     expiry: ModifierExpiry::OnGameEnd, 
                     source: vec![player_id],
                 });
-                game.modifiers.vars.ante_multiplier *= ante_mult;
+
+                game.modifiers.recompute_vars();
+                give_special_card(SpecialCard::ChipBoost, 1, true, player_id, game, events)?;
             },
             SpecialCard::PotMult => {
                 let pot_mult = 1.25;
@@ -453,7 +459,8 @@ impl SpecialCard {
                     expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
                     source: vec![player_id],
                 });
-                game.modifiers.vars.pot_multiplier *= pot_mult;
+                
+                game.modifiers.recompute_vars();
             },
             SpecialCard::RaiseBlock => {
                 game.modifiers.combine_or_add_modifiers(Modifier { 
@@ -605,7 +612,7 @@ impl SpecialCard {
             // containing only cards with unique effects
             SpecialCard::Special => {
                 let count = 5;
-                let permitted_cards: [SpecialCard; 14] = [
+                let permitted_cards: [SpecialCard; 16] = [
                     SpecialCard::ReplaceCardSelf,
                     SpecialCard::DrawCardSelf,
                     SpecialCard::ReplaceCardCommunity,
@@ -620,6 +627,8 @@ impl SpecialCard {
                     SpecialCard::ChipBoost,
                     SpecialCard::ChipGamble,
                     SpecialCard::Blackjack,
+                    SpecialCard::HandSwap,
+                    SpecialCard::Joker,
                 ];
 
                 for _ in 0..count {
@@ -628,10 +637,42 @@ impl SpecialCard {
                 }
             },
             SpecialCard::Discard => {
-                todo!()
+                game.modifiers.combine_or_add_modifiers(Modifier { 
+                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Nothing), 
+                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
+                    source: vec![player_id],
+                });
             },
             SpecialCard::HandSwap => {
-                todo!()
+                if t_id == usize::MAX {
+                    return Err(GameError::InvalidTargetPlayer);
+                }
+
+                // get target cards
+                let t_idx = game.get_player_index(t_id).unwrap_or(0);
+                let target = &game.players[t_idx];
+                let target_cards: Vec<ExpandedCard> = [&game.community[..], &target.cards[..]].concat();
+                let target_hand = Hand::new(&target_cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+
+                // get player cards
+                let player = &game.players[player_idx];
+                let player_cards: Vec<ExpandedCard> = [&game.community[..], &player.cards[..]].concat();
+                let player_hand = Hand::new(&player_cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+                
+                // if player is better than target, then swap
+                if player_hand > target_hand {
+                    let temp_player = player.cards.clone();
+                    game.players[player_idx].cards = game.players[t_idx].cards.clone();
+                    game.players[t_idx].cards = temp_player;
+                // otherwise, remove self and give a failure warning
+                } else {
+                    game.players[player_idx].special_cards.remove(self_idx);
+                    return Err(GameError::HandSwapFailed);
+                }
+            },
+            SpecialCard::Joker => {
+                if c_index >= game.community.len() { return Err(GameError::CardIndexInvalid) }
+                game.replace_community_card(c_index, ExpandedCard::get_joker(), events)?;
             },
         }
         
@@ -640,6 +681,22 @@ impl SpecialCard {
         // special special card check
         if game.ctx.rng.random_bool(0.005) {
             give_special_card(SpecialCard::Special, 1, true, player_id, game, events)?;
+        }
+
+        Ok(())
+    }
+
+    /**
+     * Plays card discard effects
+     */
+    pub(crate) fn discard_card(&self, player_id: usize, game: &mut Game, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
+        match self {
+            _ => {},
+        }
+
+        if game.ctx.rng.random_bool(0.01) {
+            // should never fail so long as player_id and game are valid
+            give_special_card(SpecialCard::Discard, 1, true, player_id, game, events)?;
         }
 
         Ok(())
@@ -676,6 +733,10 @@ impl SpecialCard {
             "invalidatethreeofakind" => SpecialCard::InvalidateThreeOfAKind,
             "invalidatetwopair" => SpecialCard::InvalidateTwoPair,
             "invalidatefullhouse" => SpecialCard::InvalidateFullHouse,
+            "special" => SpecialCard::Special,
+            "discard" => SpecialCard::Discard,
+            "handswap" => SpecialCard::HandSwap,
+            "joker" => SpecialCard::Joker,
             _ => return None,
         })
     }
@@ -690,11 +751,6 @@ impl SpecialCard {
             .cmp(&(if y.folded { i32::MAX } else { y.chips + y.total_bet }))
         );
         if let Some(p) = losing_player && p.id == player_id {
-            luck *= 1.4;
-        }
-        
-        // increased luck for winner special card
-        if game.round == Round::Showdown {
             luck *= 1.4;
         }
 
@@ -724,7 +780,7 @@ impl SpecialCard {
 
 // weight functions for special cards - determines end draw probability
 // takes a luck value l, determined through several factors, and produces a card. generally, better cards will scale better with luck
-static SPECIAL_CARD_WEIGHT_FNS: [(SpecialCard, fn(f64) -> f64); 29] = [
+static SPECIAL_CARD_WEIGHT_FNS: [(SpecialCard, fn(f64) -> f64); 31] = [
     (SpecialCard::ReplaceCardSelf, |l| 4.0 * l),
     (SpecialCard::DrawCardSelf, |l| 1.5 * l),
     (SpecialCard::ReplaceCardCommunity, |_| 10.0),
@@ -739,6 +795,8 @@ static SPECIAL_CARD_WEIGHT_FNS: [(SpecialCard, fn(f64) -> f64); 29] = [
     (SpecialCard::ChipBoost, |l| 6.0 * l),
     (SpecialCard::ChipGamble, |l| 1.0 * l.powi(2)),
     (SpecialCard::Blackjack, |_| 1.0),
+    (SpecialCard::HandSwap, |l| 1.0 * l),
+    (SpecialCard::Joker, |l| 1.0 * l),
     (SpecialCard::DrawHeart, |_| 10.0),
     (SpecialCard::DrawSpade, |_| 10.0),
     (SpecialCard::DrawDiamond, |_| 10.0),

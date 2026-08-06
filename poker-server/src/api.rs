@@ -65,6 +65,7 @@ pub(crate) struct GameState {
     pub players: Vec<PlayerState>,
     pub modifiers: Vec<Modifier>,
     pub modifier_vars: ModifierDisplayValues,
+    pub games_played: i32,
 }
 
 #[derive(Serialize)]
@@ -72,6 +73,7 @@ pub(crate) struct GameState {
 pub(crate) struct ModifierDisplayValues {
     pub pot_mult: f64,
     pub ante_mult: f64,
+    pub gamble_success_chance: f64,
 }
 
 #[derive(Serialize)]
@@ -167,8 +169,8 @@ pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
         let hole_cards: Vec<CardView> = {
             let forced_visibility = is_showdown || p.id == viewer_id;
 
-            p.cards.iter().enumerate().map(|(i, c)| {
-                if forced_visibility {
+            p.cards.iter().enumerate().map(|(card_idx, c)| {
+                if forced_visibility || p.card_visibility.get(card_idx).map_or(false, |vis| vis.contains(&viewer_id)) {
                     convert_to_cardview(c)
                 } else {
                     CardView::Hidden
@@ -236,6 +238,8 @@ pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
         modifier_vars: ModifierDisplayValues { 
             pot_mult: game.modifiers.vars.pot_multiplier, 
             ante_mult: game.modifiers.vars.ante_multiplier, 
+            gamble_success_chance: game.modifiers.vars.gamble_success_chance,
         },
+        games_played: game.games_played,
     }
 }

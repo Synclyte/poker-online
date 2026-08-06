@@ -41,6 +41,7 @@ pub enum GameError {
     SpecialCardsFull,
     DuplicateConfigID,
     PrimaryMoveAlreadyMade,
+    HandSwapFailed,
 }
 impl fmt::Display for GameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -65,6 +66,7 @@ impl fmt::Display for GameError {
             Self::SpecialCardsFull => "Could not deal special card: already full",
             Self::DuplicateConfigID => "Provided configuration contained duplicate user IDs",
             Self::PrimaryMoveAlreadyMade => "Already performed primary action",
+            Self::HandSwapFailed => "Hand swap failed: target has better hand",
         };
 
         f.write_str(message)
@@ -73,7 +75,7 @@ impl fmt::Display for GameError {
 impl GameError {
     pub fn error_type(&self) -> ErrorType {
         match self {
-            Self::RaiseBlocked | Self::SpecialCardsBlocked | Self::SpecialCardsFull => ErrorType::Warning,
+            Self::RaiseBlocked | Self::SpecialCardsBlocked | Self::SpecialCardsFull | Self::HandSwapFailed => ErrorType::Warning,
             _ => ErrorType::Error
         }
     }
@@ -389,6 +391,8 @@ pub(crate) enum MoveAction {
     DealSpecial { count: usize },
     RemoveHole { index: usize },
     RemoveCommunity { index: usize },
+    ReplaceHole { index: usize },
+    ReplaceCommunity { index: usize },
     RevealCard { target_id: usize, card_index: usize },
     SwapBot,
     SwapHuman,
@@ -452,7 +456,7 @@ impl Game {
      * Returns a JSON string containing an error if not possible
      */
     pub(crate) fn update_config(&mut self, config: GameConfig) -> Result<(), GameError> {
-        if self.round > Round::Preround { 
+        if !matches!(self.round, Round::Room | Round::Preround | Round::GameEnd) {
             return Err(GameError::ConfigLocked); 
         }
 
@@ -522,9 +526,12 @@ impl Game {
      * Resets all player and game related data, progressing the round from Room to Preround
      */
     pub fn initialise(&mut self) -> Result<(), GameError> {
-        if self.round != Round::Room {
+        if self.round != Round::Room && self.round != Round::GameEnd {
             return Err(GameError::InvalidRound);
         }
+
+        self.games_played = 0;
+        self.winner_ids.clear();
 
         let start_chips = if self.ctx.starting_chips > 0 { self.ctx.starting_chips } else { 1000 };
         self.players.iter_mut().for_each(|p| {
@@ -544,6 +551,7 @@ impl Game {
         self.round_pool = 0;
         self.winning_hand_type.clear();
         self.dealer_index = 0;
+        self.modifiers = RoundModifiers::default();
 
         Ok(())
     }
@@ -557,13 +565,15 @@ impl Game {
             Round::Preround => self.start_new_hand(&mut events),
             Round::Showdown => {
                 self.end_hand();
-                self.start_new_hand(&mut events);
+                if self.round != Round::GameEnd && self.round != Round::Room {
+                    self.start_new_hand(&mut events);
+                }
             },
             _ => return Err(GameError::InvalidRound),
         }
 
-        if self.round == Round::Room {
-            return Ok(Vec::new());
+        if self.round == Round::Room || self.round == Round::GameEnd {
+            return Ok(events);
         }
 
         self.advance_game_loop(&mut events);
@@ -829,6 +839,8 @@ impl Game {
                     return Err(GameError::CardIndexInvalid);
                 }
 
+                let card = self.players[player_index].special_cards[card_index];
+                card.discard_card(player_id, self, &mut action_events)?;
                 self.players[player_index].special_cards.remove(card_index);
             }
         }
@@ -997,7 +1009,6 @@ impl Game {
         self.pots.clear();
         self.community.clear();
         self.winning_hand_type.clear();
-        self.modifiers = RoundModifiers::default();
 
         self.deck = self.ctx.deck_type.get_associated_deck();
         self.deck.shuffle(&mut self.ctx.rng);
@@ -1109,14 +1120,7 @@ impl Game {
 
         events.push(MoveEvent { 
             actor_id: Some(player_id), 
-            action: MoveAction::RemoveHole { index: card_idx }, 
-            private: false 
-        
-        });
-
-        events.push(MoveEvent { 
-            actor_id: Some(player_id), 
-            action: MoveAction::DealHole { count: 1 }, 
+            action: MoveAction::ReplaceHole { index: card_idx }, 
             private: false 
         });
 
@@ -1135,14 +1139,7 @@ impl Game {
 
         events.push(MoveEvent { 
             actor_id: None, 
-            action: MoveAction::RemoveCommunity { index: card_idx }, 
-            private: false 
-        
-        });
-
-        events.push(MoveEvent { 
-            actor_id: None, 
-            action: MoveAction::DealCommunity { count: 1 }, 
+            action: MoveAction::ReplaceCommunity { index: card_idx }, 
             private: false 
         });
 
@@ -1252,6 +1249,7 @@ impl Game {
 
         if self.games_played >= self.ctx.round_limit {
             self.end_game();
+            return;
         }
 
         if self.players.is_empty() {

@@ -110,10 +110,10 @@ export function Home() {
 
     const joinGame = (specificCode?: string) => {
         if (!socket || !isConnected) return showToast("Failed to join game - not connected to server", "error");
-        
+
         const targetCode = specificCode || roomCode;
         if (!targetCode) return;
-        
+
         setIsJoining(true);
         socket.emit("joinGame", targetCode.toLowerCase());
     }
@@ -133,20 +133,20 @@ export function Home() {
     return (
         <div className={styles.container}>
             <div className={styles.canvasPlaceholder}>
-                
+
             </div>
 
             <div className={styles.uiWrapperOuter}>
-                <PixelBox 
+                <PixelBox
                     innerClassName={styles.uiWrapperInner}
                     borderColour={boxBorderColour}
                     backgroundColour="#2b2b36"
                 >
-                    <h1 className={styles.title}>Poker</h1>
+                    <h1 className={styles.title}>Poker?</h1>
 
                     {view === 'main' && (
                         <div className={styles.menuStack}>
-                            <button className={styles.btnWrapper} onClick={() => {setView('join-public'); getPublicLobbies()}}>
+                            <button className={styles.btnWrapper} onClick={() => { setView('join-public'); getPublicLobbies() }}>
                                 <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
                                     Find Public Game
                                 </PixelBox>
@@ -170,7 +170,7 @@ export function Home() {
                                 <label>Lobby Type</label>
                                 <div className={styles.inputOuter}>
                                     <PixelBox innerClassName={styles.inputInner} borderColour={boxBorderColour}>
-                                        <select 
+                                        <select
                                             className={styles.formControl}
                                             value={isPrivate ? "private" : "public"}
                                             onChange={(e) => setIsPrivate(e.target.value === "private")}
@@ -183,13 +183,13 @@ export function Home() {
                             </div>
 
                             <div className={styles.formGroup}>
-                                <NumberSetting label={"Player Capacity"} range={"2-8"} value={playerCapacity} 
-                                min={2} max={8} step={1} onChange={(val) => {if (val) setPlayerCapacity(val)}}
-                                styles={styles} boxBorderColour={boxBorderColour} />
+                                <NumberSetting label={"Player Capacity"} range={"2-8"} value={playerCapacity}
+                                    min={2} max={8} step={1} onChange={(val) => { if (val) setPlayerCapacity(val) }}
+                                    styles={styles} boxBorderColour={boxBorderColour} />
                             </div>
 
-                            <button 
-                                type="submit" 
+                            <button
+                                type="submit"
                                 className={styles.btnWrapper}
                                 disabled={isCreating}
                             >
@@ -197,9 +197,9 @@ export function Home() {
                                     {isCreating ? "Creating..." : "Host Lobby"}
                                 </PixelBox>
                             </button>
-                            <button 
-                                type="button" 
-                                className={styles.btnWrapper} 
+                            <button
+                                type="button"
+                                className={styles.btnWrapper}
                                 onClick={back}
                             >
                                 <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
@@ -213,13 +213,13 @@ export function Home() {
                         <div className={styles.menuStack}>
                             <div className={styles.roomListOuter}>
                                 <PixelBox innerClassName={styles.roomListInner} borderColour="#505060">
-                                    { (publicLobbies.length > 0) ? publicLobbies.map((room) => (
+                                    {(publicLobbies.length > 0) ? publicLobbies.map((room) => (
                                         <div key={room.roomId} className={styles.roomItem}>
                                             <div className={styles.roomInfo}>
                                                 <span>Room: {room.roomId} ({room.activeConnections}/{room.maxPlayers})</span>
                                                 <span>Status: {displayRound(room.round)}</span>
                                             </div>
-                                            <button 
+                                            <button
                                                 className={styles.btnWrapper}
                                                 onClick={() => joinGame(room.roomId)}
                                                 disabled={isJoining}
@@ -248,8 +248,8 @@ export function Home() {
                                 <label>Enter Room Code</label>
                                 <div className={styles.inputOuter}>
                                     <PixelBox innerClassName={styles.inputInner} borderColour={boxBorderColour}>
-                                        <input 
-                                            type="text" 
+                                        <input
+                                            type="text"
                                             maxLength={3}
                                             className={`${styles.formControl} ${styles.roomCodeInput}`}
                                             value={roomCode}

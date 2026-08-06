@@ -6,7 +6,7 @@ import { GameAPI } from './pkg/poker_server.js';
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*'}});
+const io = new Server(httpServer, { cors: { origin: '*' } });
 
 interface GameConfig {
     maxPlayers: number;
@@ -29,7 +29,7 @@ interface EngineConfig {
     specialCardLimit: number;
     deckType: string;
     maxPlayers: number;
-    roundLimit: number; 
+    roundLimit: number;
 }
 
 interface Player {
@@ -104,8 +104,8 @@ const isError = (value: ErrorResponse | MoveResult): value is ErrorResponse => {
  * Calls a provided function after checking a given socket has permission to do so
  */
 function withGameContext(
-    socket: Socket, 
-    requireHost: boolean, 
+    socket: Socket,
+    requireHost: boolean,
     callback: (room: RoomData, session: SessionData, sessionToken: string) => void
 ) {
     const sessionToken = socketSessionMap.get(socket.id);
@@ -129,7 +129,7 @@ function withGameContext(
  */
 function adjustConnections(room: RoomData, amount: number) {
     room.activeConnections += amount;
-    
+
     if (room.activeConnections <= 0) {
         handleRoomRemoval(room.roomId);
     } else if (room.roomCloseTimer) {
@@ -161,7 +161,7 @@ const clampValue = (value: any, boundName: string) => {
  * Updates the Rust game config by synchronising it with the existing room config
  */
 function updateGameConfig(room: RoomData) {
-    if (room.game.get_round() !== "room") return;
+    if (room.game.get_round() !== "room" && room.game.get_round() !== "gameover") return;
 
     const blindSize = clampValue(room.config.blindSize, "blindSize") ?? room.config.blindSize;
     const minRaise = clampValue(room.config.minRaise, "minRaise") ?? room.config.minRaise;
@@ -169,7 +169,7 @@ function updateGameConfig(room: RoomData) {
 
     const newConfig: EngineConfig = {
         players: buildPlayerList(room),
-        rngSeed: Date.now(), 
+        rngSeed: Date.now(),
         blindSize,
         minRaise,
         startingChips,
@@ -191,7 +191,6 @@ function updateGameConfig(room: RoomData) {
 
 /**
  * Forces the end of the next turn if the player does not make a move within the specified time limit
- * TODO: send time limit in socket event so client is able to see when turns expire
  */
 function turnTimeout(roomId: string, game: GameAPI, limit: number) {
     clearTimeout(timers.get(roomId));
@@ -265,7 +264,7 @@ function handleRoomRemoval(roomId: string) {
  */
 function assignNewHost(roomId: string, room: RoomData) {
     const humanPlayers = room.players.filter(p => !p.isBot);
-    
+
     if (humanPlayers.length > 0) {
         // get new host, selected as the player who has been in the lobby the longest
         const newHostPlayer = humanPlayers[0];
@@ -274,7 +273,7 @@ function assignNewHost(roomId: string, room: RoomData) {
         const sessionEntry = Array.from(sessionMap.entries()).find(
             ([_, s]) => s.roomId === roomId && s.playerId === newHostPlayer.id
         );
-        
+
         // then update relevant host records to reassign host
         if (sessionEntry) {
             room.roomHostSession = sessionEntry[0];
@@ -307,7 +306,7 @@ function broadcastGameState(room: RoomData, events: MoveEvent[] = []) {
             const response = JSON.parse(room.game.get_game_state(session.playerId)) as MoveResult | ErrorResponse;
             if (isError(response)) {
                 io.to(session.socketId).emit(
-                    response.responseType, 
+                    response.responseType,
                     response.message
                 );
             } else {
@@ -369,15 +368,15 @@ io.on("connection", (socket: Socket) => {
             session.disconnectTimer = setTimeout(() => {
                 try {
                     const currentRound = room.game.get_round();
-                    
+
                     if (currentRound !== "room" && currentRound !== "preround") {
                         let response = JSON.parse(room.game.toggle_id_with_bot(session.playerId, true));
                         if (isError(response)) {
                             return socket.emit(
-                                response.responseType, 
+                                response.responseType,
                                 response.message
                             );
-                        
+
                         }
                         broadcastGameState(room, response.events);
                     } else {
@@ -386,7 +385,7 @@ io.on("connection", (socket: Socket) => {
                     }
 
                     room.sessionTokens = room.sessionTokens.filter((token) => token !== sessionToken);
-                    
+
                     socket.to(session.roomId).emit("info", `Player ${session.playerId} disconnected`);
                     broadcastLobbyUpdate(room);
 
@@ -402,7 +401,7 @@ io.on("connection", (socket: Socket) => {
                     io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to toggle player with bot")
                     return;
                 }
-            // disconnect buffered to ensure minor connection drops do not cause disconnect
+                // disconnect buffered to ensure minor connection drops do not cause disconnect
             }, 3000);
 
             socketSessionMap.delete(socket.id);
@@ -449,7 +448,7 @@ io.on("connection", (socket: Socket) => {
             socketSessionMap.delete(socket.id);
             sessionMap.delete(sessionToken);
 
-            console.error("Game creation configuration failed", {roomId, error, parsedConfig});
+            console.error("Game creation configuration failed", { roomId, error, parsedConfig });
 
             socket.emit("error", "Failed to create game due to bad configuration");
         }
@@ -496,6 +495,8 @@ io.on("connection", (socket: Socket) => {
             room.config.minRaise = clampValue(gameConfig.minRaise, "minRaise") ?? room.config.minRaise;
             room.config.startingChips = clampValue(gameConfig.startingChips, "startingChips") ?? room.config.startingChips;
             room.config.deckType = gameConfig.deckType ?? room.config.deckType ?? "standard";
+            room.config.specialCardLimit = clampValue(gameConfig.specialCardLimit, "specialCardLimit") ?? room.config.specialCardLimit;
+            room.config.roundLimit = clampValue(gameConfig.roundLimit, "roundLimit") ?? room.config.roundLimit;
 
             updateGameConfig(room);
             broadcastLobbyUpdate(room);
@@ -521,7 +522,7 @@ io.on("connection", (socket: Socket) => {
             // if a player session exists, remove it from game data
             if (targetEntry) {
                 const [targetSessionToken, targetSession] = targetEntry;
-                
+
                 room.sessionTokens = room.sessionTokens.filter(t => t !== targetSessionToken);
                 adjustConnections(room, -1);
 
@@ -553,7 +554,7 @@ io.on("connection", (socket: Socket) => {
             if (targetEntry) {
                 room.roomHostSession = targetEntry[0];
                 room.players.forEach(p => p.isHost = (p.id === pid));
-                
+
                 broadcastLobbyUpdate(room);
                 io.to(room.roomId).emit("hostPromote", { playerId: pid });
             } else {
@@ -620,12 +621,12 @@ io.on("connection", (socket: Socket) => {
                         console.error("Join configuration failed", { roomId, error });
                         socket.emit("error", "Failed to communicate join with server");
                     }
-                } catch (e) {}
+                } catch (e) { }
             }
         }
 
         adjustConnections(room, 1);
-        
+
         const newId = room.players.length > 0 ? Math.max(...room.players.map(p => p.id)) + 1 : 0;
         // todo: allow players to choose names
         room.players.push({
@@ -640,22 +641,22 @@ io.on("connection", (socket: Socket) => {
         } catch (e) {
             adjustConnections(room, -1);
             room.players.pop();
-            return socket.emit("error", "Failed to communicate join with server");            
+            return socket.emit("error", "Failed to communicate join with server");
         }
-        
+
         const sessionToken = generateSessionToken();
         socketSessionMap.set(socket.id, sessionToken);
-        sessionMap.set(sessionToken, { 
-            roomId, 
-            playerId: newId, 
-            socketId: socket.id 
+        sessionMap.set(sessionToken, {
+            roomId,
+            playerId: newId,
+            socketId: socket.id
         });
         room.sessionTokens.push(sessionToken);
 
         // edge case logic for rejoining an empty lobby
         if (humanCount === 0) room.roomHostSession = sessionToken;
 
-        socket.emit("joinSuccess", {roomId, sessionToken});
+        socket.emit("joinSuccess", { roomId, sessionToken });
         socket.join(roomId);
 
         socket.to(roomId).emit("info", `Player ${newId} joined the game`);
@@ -674,10 +675,10 @@ io.on("connection", (socket: Socket) => {
         if (!room) return;
 
         adjustConnections(room, -1);
-        
+
         room.sessionTokens = room.sessionTokens.filter((token) => token !== sessionToken);
         room.players = room.players.filter(p => p.id !== session.playerId);
-        
+
         room.game.queue_remove_player(session.playerId);
         updateGameConfig(room);
 
@@ -690,7 +691,7 @@ io.on("connection", (socket: Socket) => {
         socket.to(session.roomId).emit("info", `Player ${session.playerId} left the game`);
         try {
             broadcastGameState(room);
-        } catch (e) {}
+        } catch (e) { }
 
         broadcastLobbyUpdate(room);
     });
@@ -711,10 +712,10 @@ io.on("connection", (socket: Socket) => {
         withGameContext(socket, false, (room, session) => {
             socket.emit("clientInfo", { playerId: session.playerId });
 
-            socket.emit("lobbyUpdate", { 
-                players: room.players, 
-                config: room.config, 
-                round: room.game.get_round() 
+            socket.emit("lobbyUpdate", {
+                players: room.players,
+                config: room.config,
+                round: room.game.get_round()
             });
             try {
                 const playerState = JSON.parse(room.game.get_game_state(session.playerId)) as MoveResult | ErrorResponse;
@@ -725,7 +726,7 @@ io.on("connection", (socket: Socket) => {
                 }
 
                 socket.emit("gameUpdate", playerState);
-            } catch (e) {}
+            } catch (e) { }
         });
     });
 
@@ -755,7 +756,7 @@ io.on("connection", (socket: Socket) => {
         } else {
             try {
                 let response = JSON.parse(room.game.toggle_id_with_bot(session.playerId, false)) as MoveResult | ErrorResponse;
-                
+
                 if (isError(response)) {
                     socket.emit(response.responseType, response.message);
                     return;
@@ -765,8 +766,8 @@ io.on("connection", (socket: Socket) => {
             } catch (e) {
                 socket.emit("error", "An unexpected error occurred while attempting to reconnect to the previous game session");
             }
-        }        
-        
+        }
+
         socket.emit("playerReconnect", {
             roomId: session.roomId,
             playerId: session.playerId,
@@ -782,7 +783,7 @@ io.on("connection", (socket: Socket) => {
                 const initialiseResult = JSON.parse(room.game.initialise());
                 if (isError(initialiseResult)) {
                     return io.to(session.socketId).emit(
-                        initialiseResult.responseType, 
+                        initialiseResult.responseType,
                         initialiseResult.message
                     );
                 }
@@ -822,7 +823,7 @@ io.on("connection", (socket: Socket) => {
         withGameContext(socket, false, (room, session) => {
             try {
                 const moveResult = JSON.parse(room.game.player_move(
-                    session.playerId, 
+                    session.playerId,
                     moveData
                 )) as MoveResult | ErrorResponse;
 
@@ -830,8 +831,8 @@ io.on("connection", (socket: Socket) => {
 
                 broadcastGameState(room, moveResult.events);
                 turnTimeout(
-                    room.roomId, 
-                    room.game, 
+                    room.roomId,
+                    room.game,
                     room.config.turnTimeout * 1000
                 );
             } catch (err) {
@@ -846,13 +847,13 @@ io.on("connection", (socket: Socket) => {
         // shows all lobbies which are public, in a joinable round, and not full
         const publicLobbies = Array.from(roomMap.values())
             .filter((room) => !room.config.isPrivate && joinableRounds.includes(room.game.get_round()) && room.activeConnections < room.config.maxPlayers && room.activeConnections > 0)
-            .map((room) => ({ 
-                roomId: room.roomId, 
-                activeConnections: room.activeConnections, 
-                maxPlayers: room.config.maxPlayers, 
-                round: room.game.get_round() 
+            .map((room) => ({
+                roomId: room.roomId,
+                activeConnections: room.activeConnections,
+                maxPlayers: room.config.maxPlayers,
+                round: room.game.get_round()
             }));
-        
+
         socket.emit("publicLobbies", publicLobbies);
     });
 });

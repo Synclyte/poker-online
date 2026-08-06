@@ -11,6 +11,7 @@
     --tertiary-button-colour: #e53935;
     --tertiary-button-hover-colour: #ff5252;
     --input-focus-colour: #fca311;
+    --special-colour: #662c91;
 
     --text-colour: #dcdcdc;
     --border-colour: #dcdcdc;
@@ -28,8 +29,12 @@
     --anim-betchip-add-ms: 100;
     --anim-flip-ms: 450;
     --anim-deal-ms: 320;
-    --anim-dissolve-ms: 400;
+    --anim-dissolve-ms: 500;
     --anim-showdown-delay-ms: calc(var(--anim-flip-ms) + 200);
+    --anim-special-move-ms: 450;
+    --anim-special-pause-ms: 200;
+    --anim-special-reveal-pause-ms: 450;
+    --anim-check-ms: 350;
 
     color: var(--text-colour);
 }
@@ -60,6 +65,44 @@
 .headerInfo {
     display: flex;
     gap: 2rem;
+    align-items: center;
+}
+
+.headerRoundBlock {
+    min-width: 170px;
+    width: 170px;
+    text-align: left;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.35rem;
+    flex-shrink: 0;
+}
+
+.headerHandsBlock {
+    min-width: 170px;
+    width: 170px;
+    text-align: left;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.35rem;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    flex-shrink: 0;
+}
+
+.headerTimerBlock {
+    min-width: 150px;
+    width: 150px;
+    text-align: left;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.35rem;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    flex-shrink: 0;
 }
 
 .pokerFelt {
@@ -112,7 +155,7 @@
     gap: var(--card-gap);
     flex-wrap: nowrap;
     overflow: visible;
-    width: max-content;
+    width: calc(5 * var(--card-slot-width) + 4 * var(--card-gap));
     max-width: none;
 }
 
@@ -215,6 +258,34 @@
     transition: opacity 0.3s ease, transform 0.3s ease;
     z-index: 10;
     overflow: visible;
+    filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
+}
+
+@keyframes seatCheckBounce {
+    0% {
+        transform: scale(1);
+    }
+
+    30% {
+        transform: scale(1.1);
+    }
+
+    50% {
+        transform: scale(0.95);
+    }
+
+    75% {
+        transform: scale(1.04);
+    }
+
+    100% {
+        transform: scale(1);
+    }
+}
+
+.animatingCheck {
+    animation: seatCheckBounce calc(var(--anim-check-ms) * 1ms) cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+    z-index: 15 !important;
 }
 
 .seatInner {
@@ -278,12 +349,38 @@
     font-family: 'Jersey 10', sans-serif;
     font-size: 1.5rem;
     font-weight: bold;
-    padding: 2px 6px;
+    padding: 0 6px;
     line-height: 1;
     display: flex;
     align-items: center;
     justify-content: center;
     text-align: center;
+}
+
+.seatTimerBadgeWrapper {
+    position: absolute;
+    top: -14px;
+    left: -14px;
+    z-index: 12;
+    pointer-events: none;
+}
+
+.seatTimerBadgeInner {
+    background: #1a1a24;
+    color: var(--input-focus-colour);
+    font-family: 'Jersey 10', sans-serif;
+    font-size: 1.4rem;
+    font-weight: bold;
+    padding: 0 6px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.seatTimerLow {
+    color: #ff4d4d !important;
 }
 
 .waitingNotice {
@@ -298,7 +395,7 @@
     }
 
     50% {
-        transform: translate(-50%, -50%) scale(1.15);
+        transform: translate(-50%, -50%) scale(1.08);
     }
 
     100% {
@@ -354,7 +451,7 @@
 }
 
 .specialBackFace {
-    background: #662c91;
+    background: var(--special-colour);
     border: 2px solid #ffffff;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
     display: flex;
@@ -479,7 +576,6 @@
     box-shadow: 0 0 0 3px var(--input-focus-colour), 4px 4px 0px var(--box-shadow-colour) !important;
 }
 
-/* Animated Special Card Use Overlay & Keyframes */
 .animatedSpecialCardOverlay {
     position: absolute;
     top: 0;
@@ -543,30 +639,13 @@
     }
 }
 
-@keyframes specialDissolveCenterFlippedKeyframe {
+@keyframes specialDissolveCenter {
     0% {
         transform: translate(var(--end-x), var(--end-y)) scale(1.1);
         opacity: 1;
     }
 
-    70% {
-        transform: translate(var(--end-x), var(--end-y)) scale(1.15);
-        opacity: 0.8;
-    }
-
-    100% {
-        transform: translate(var(--end-x), var(--end-y)) scale(0);
-        opacity: 0;
-    }
-}
-
-@keyframes specialDissolveCenterFaceUpKeyframe {
-    0% {
-        transform: translate(var(--end-x), var(--end-y)) scale(1.1);
-        opacity: 1;
-    }
-
-    70% {
+    40% {
         transform: translate(var(--end-x), var(--end-y)) scale(1.15);
         opacity: 0.8;
     }
@@ -578,23 +657,20 @@
 }
 
 .animMoveOther {
-    animation: specialMoveOther 550ms cubic-bezier(0.25, 1, 0.5, 1) forwards;
+    animation: specialMoveOther calc(var(--anim-special-move-ms) * 1ms) cubic-bezier(0.25, 1, 0.5, 1) forwards;
 }
 
 .animMoveSelf {
-    animation: specialMoveSelf 550ms cubic-bezier(0.25, 1, 0.5, 1) forwards;
+    animation: specialMoveSelf calc(var(--anim-special-move-ms) * 1ms) cubic-bezier(0.25, 1, 0.5, 1) forwards;
 }
 
 .animFlipReveal {
-    animation: specialFlipRevealKeyframe 450ms cubic-bezier(0.4, 0.2, 0.2, 1) forwards;
+    animation: specialFlipRevealKeyframe calc(var(--anim-flip-ms) * 1ms) cubic-bezier(0.4, 0.2, 0.2, 1) forwards;
 }
 
-.animDissolveFlipped {
-    animation: specialDissolveCenterFlippedKeyframe 450ms ease-in forwards;
-}
-
+.animDissolveFlipped,
 .animDissolveFaceUp {
-    animation: specialDissolveCenterFaceUpKeyframe 450ms ease-in forwards;
+    animation: specialDissolveCenter calc(var(--anim-dissolve-ms) * 1ms) ease-in forwards;
 }
 
 .specialCardCount {
@@ -721,8 +797,8 @@
 }
 
 .joker>span {
-    font-family: 'Minecraft', sans-serif;
-    font-size: 1rem;
+    font-family: 'Jersey 10', sans-serif;
+    font-size: 1.5rem;
 }
 
 .joker>img {
@@ -769,11 +845,6 @@
         opacity: 1;
     }
 
-    70% {
-        transform: translate(0, 0) scale(0.65) rotate(0deg);
-        opacity: 1;
-    }
-
     100% {
         transform: translate(0, 0) scale(0) rotate(0deg);
         opacity: 0;
@@ -801,6 +872,19 @@
 
 .seatSpecialSlot:has(.animatingDissolve) {
     opacity: 1;
+}
+
+.specialMark {
+    position: absolute;
+    width: 14px !important;
+    height: 14px !important;
+    justify-self: center;
+}
+
+.specialImage {
+    height: 60px !important;
+    width: 60px !important;
+    justify-self: center;
 }
 
 .targetableCard {
@@ -848,27 +932,49 @@
     pointer-events: auto;
 }
 
+@keyframes modifierRemove {
+    0% {
+        transform: scale(1);
+        opacity: 1;
+    }
+
+    100% {
+        transform: scale(0);
+        opacity: 0;
+    }
+}
+
 .modifierItemWrapper {
     position: relative;
     overflow: visible;
     cursor: pointer;
+    transition: transform 0.15s ease;
+}
+
+.removingModifier {
+    animation: modifierRemove calc(var(--anim-dissolve-ms, 400) * 1ms) cubic-bezier(0.25, 1, 0.5, 1) forwards;
+    pointer-events: none !important;
+}
+
+.modifierItemWrapper:hover {
+    transform: scale(1.08);
 }
 
 .modifierPixelBox {
-    width: 44px;
-    height: 44px;
-    padding: 4px;
+    width: 70px;
+    height: 70px;
+    padding: 0;
+    background-color: #ffffff;
     display: flex;
     align-items: center;
     justify-content: center;
     box-sizing: border-box;
-    transition: transform 0.15s ease, border-color 0.15s ease;
+    overflow: hidden;
 }
 
 .modifierPixelBox img {
-    width: 32px;
-    height: 32px;
-    object-fit: contain;
+    width: 60px;
+    height: 60px;
     image-rendering: pixelated;
 }
 
@@ -884,11 +990,6 @@
     display: block;
 }
 
-.modifierItemWrapper:hover .modifierPixelBox {
-    transform: scale(1.08);
-}
-
-/* Modifier Tooltip */
 .modifierTooltip {
     position: absolute;
     right: calc(100% + 12px);
@@ -919,6 +1020,69 @@
 
 .modifierItemWrapper:hover .modifierTooltip {
     opacity: 1;
+    visibility: visible;
+}
+
+.endGameOverlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.75);
+    /* backdrop-filter: blur(4px); */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+    pointer-events: auto;
+}
+
+.endGameInner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2.5rem 3rem;
+    gap: 1.5rem;
+    text-align: center;
+    width: 450px;
+    max-width: 90vw;
+    box-sizing: border-box;
+}
+
+.endGameTitle {
+    font-size: 3rem;
+    color: var(--input-focus-colour);
+    font-family: 'Jersey 15', sans-serif;
+    margin: 0;
+    text-shadow: 3px 3px 0px var(--box-shadow-colour);
+    letter-spacing: 2px;
+}
+
+.endGameWinnerText {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.winnerName {
+    font-size: 2rem;
+    color: #ffffff;
+    font-family: 'Jersey 10', sans-serif;
+    text-shadow: 2px 2px 0px var(--box-shadow-colour);
+}
+
+.winnerChips {
+    font-size: 1.5rem;
+    color: var(--text-colour);
+    font-family: 'Jersey 10', sans-serif;
+}
+
+.endGameActions {
+    display: flex;
+    gap: 1.5rem;
+    margin-top: 1rem;
 }
 
 .modifierDesc {

@@ -99,7 +99,8 @@ impl AI {
                     self.budget = self.calculate_round_budget(player, game, hand_strength);
                     actions.push(Action::Call);
                 } else {
-                    let min_r = game.ctx.min_raise.min(player.chips);
+                    let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
+                    let min_r = effective_min.min(player.chips);
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.1 * self.greed * player.chips as f64) as i32;
                     let adjusted_raise = raise_amount.max(min_r).min(player.chips);
                     self.total_bet += adjusted_raise + (game.bet - player.round_bet).min(player.chips);
@@ -115,7 +116,8 @@ impl AI {
             let p_raise = (fear_greed_ratio * hand_strength * 2.0 * (1.0 - budget_used)).clamp(0.0, 1.0);
 
             if !p_raise.is_nan() && game.ctx.rng.random_bool(p_raise) {
-                let min_r = game.ctx.min_raise.min(player.chips);
+                let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
+                let min_r = effective_min.min(player.chips);
                 let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
                 let adjusted_raise = raise_amount.max(min_r).min(self.budget - self.total_bet).min(player.chips);
                 if adjusted_raise >= min_r {
