@@ -82,7 +82,6 @@ mod tests {
 
         fn make_move_and_end_turn(player_move: Action, player_id: usize, game: &mut Game) {
             let _ = game.player_move(player_id, player_move);
-            let _ = game.player_move(player_id, Action::EndMove);
         }
 
         #[test]
@@ -196,7 +195,9 @@ mod tests {
         #[test]
         fn test_complex_pot_paid_correctly() {
             let mut game = Game::new();
-            _ = game.update_config(create_valid_config(3, 0));
+            let mut config = create_valid_config(3, 0);
+            config.special_card_limit = 0;
+            _ = game.update_config(config);
             _ = game.initialise();
 
             let (p1_id, p2_id, p3_id) = (game.players[0].id, game.players[1].id, game.players[2].id);
@@ -380,7 +381,7 @@ mod tests {
         }
 
         #[test]
-        fn test_turn_remains_active_when_player_holds_special_cards() {
+        fn test_turn_advances_immediately_when_acting_even_with_special_cards() {
             let mut game = get_configured_started_game(2, 0);
 
             let active_player_id = game.get_current_turn_player_id();
@@ -389,15 +390,11 @@ mod tests {
             // gives current player a special card
             game.players[active_idx].special_cards.push(SpecialCard::ChipBoost);
 
-            // player calls while holding special card
+            // player calls while holding special card - turn ends immediately
             let _ = game.player_move(active_player_id, Call);
 
-            assert_eq!(game.get_current_turn_player_id(), active_player_id, "Turn should remain on current player while they hold special cards");
+            assert_ne!(game.get_current_turn_player_id(), active_player_id, "Turn should advance immediately after primary move");
             assert_eq!(game.players[active_idx].acted, true);
-
-            // turn should stay active until explicitly ended
-            let _ = game.player_move(active_player_id, Action::EndMove);
-            assert_ne!(game.get_current_turn_player_id(), active_player_id, "Turn should pass after playing ENDMOVE");
         }
 
         #[test]
@@ -427,6 +424,37 @@ mod tests {
 
             assert_eq!(game.players[active_idx].folded, true);
             assert_ne!(game.get_current_turn_player_id(), active_player_id, "Folding must immediately yield turn even if special cards remain");
+        }
+
+        #[test]
+        fn test_zero_chip_player_skipped_in_turn_order() {
+            let mut game = get_configured_started_game(3, 0);
+
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = (p0_idx + 1) % 3;
+            let p1_id = game.players[p1_idx].id;
+
+            // set p1 chips to 0 (all-in)
+            game.players[p1_idx].chips = 0;
+            game.players[p1_idx].round_bet = 10;
+
+            // p0 raises
+            let _ = game.player_move(p0_id, Action::Raise { amount: 50 });
+
+            // turn should skip p1 (0 chips)
+            assert_ne!(game.get_current_turn_player_id(), p1_id, "Player with 0 chips must be skipped in turn order");
+        }
+
+        #[test]
+        fn test_all_in_player_with_special_cards_retains_turn_opportunity() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let p0_idx = game.get_player_index(game.get_current_turn_player_id()).unwrap();
+            game.players[p0_idx].chips = 0;
+            game.players[p0_idx].special_cards.push(SpecialCard::ChipBoost);
+
+            assert!(!game.is_round_complete(), "Round must not complete if all-in players hold unplayed special cards");
         }
 
         #[test]
@@ -558,7 +586,7 @@ mod tests {
         }        
 
         #[test]
-        fn allows_specials_after_normal_action_before_end_move() {
+        fn allows_special_at_start_of_turn() {
             let mut game = get_configured_started_game(2, 0);
             let index = game.turn_index;
             game.players[index]
@@ -567,7 +595,7 @@ mod tests {
 
             let mut events = Vec::new();
 
-            game.apply_action(index, Action::Call, &mut events).unwrap();
+            // Play special card at start of turn (before acting)
             game.apply_action(
                 index,
                 Action::PlaySpecial {
@@ -577,13 +605,14 @@ mod tests {
                 },
                 &mut events,
             ).unwrap();
-            game.apply_action(index, Action::EndMove, &mut events).unwrap();
 
-            assert!(game.players[index].turn_ended);
+            game.apply_action(index, Action::Call, &mut events).unwrap();
+
+            assert!(game.players[index].acted);
         }
 
         #[test]
-        fn rejects_special_after_end_move() {
+        fn rejects_special_after_primary_action() {
             let mut game = get_configured_started_game(2, 0);
             let index = game.turn_index;
             game.players[index]
@@ -593,7 +622,6 @@ mod tests {
             let mut events = Vec::new();
 
             game.apply_action(index, Action::Call, &mut events).unwrap();
-            game.apply_action(index, Action::EndMove, &mut events).unwrap();
 
             assert_eq!(
                 game.apply_action(
@@ -605,7 +633,7 @@ mod tests {
                     },
                     &mut events,
                 ),
-                Err(GameError::InvalidAction),
+                Err(GameError::PrimaryMoveAlreadyMade),
             );
         }
     }

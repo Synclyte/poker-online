@@ -1,0 +1,182 @@
+.chatWrapper {
+    display: flex;
+    flex-direction: column;
+    width: 26vw;
+    min-width: 370px;
+    max-width: 500px;
+    font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+    color: var(--text-colour);
+    user-select: none;
+    box-sizing: border-box;
+    transition: all 0.2s ease-in-out;
+    filter: drop-shadow(4px 4px 0px var(--box-shadow-colour, rgba(0, 0, 0, 0.8)));
+}
+
+.chatWrapperFloating {
+    position: fixed;
+    bottom: 1rem;
+    right: 1rem;
+    z-index: 20000;
+}
+
+.chatWrapperTopLeft {
+    position: fixed;
+    top: 80px;
+    left: 10px;
+    z-index: 20000;
+}
+
+.chatWrapperInline {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    filter: none;
+}
+
+.chatWrapperInline .chatBody {
+    height: 394px;
+}
+
+.chatHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: var(--box-secondary-colour, #252533);
+    cursor: pointer;
+    border-bottom: 2px solid var(--border-colour);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.chatHeaderCollapsed {
+    border-bottom: none;
+}
+
+.chatTitleGroup {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chatTitle {
+    font-size: 1.75rem;
+    color: var(--input-focus-colour);
+    font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+}
+
+.unreadBadge {
+    background: var(--tertiary-button-colour);
+    color: #ffffff;
+    font-size: 1.5rem;
+    padding: 2px 6px;
+    font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+}
+
+.toggleBtn {
+    background: transparent;
+    border: none;
+    color: var(--text-colour);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 4px;
+}
+
+.collapseArrow {
+    transition: transform 0.1s linear;
+}
+
+.arrowUp {
+    transform: rotate(180deg);
+}
+
+.chatMainBox {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.chatBody {
+    display: flex;
+    flex-direction: column;
+    height: 400px;
+    background: rgba(18, 18, 26, 0.92);
+    backdrop-filter: blur(4px);
+    box-sizing: border-box;
+}
+
+.messageList {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 10px;
+    display: flex;
+    flex-direction: column;
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-colour) var(--box-secondary-colour);
+}
+
+.messageList::-webkit-scrollbar {
+    width: 10px;
+}
+
+.messageList::-webkit-scrollbar-track {
+    background: var(--box-secondary-colour);
+    border-left: 2px solid var(--light-box-colour);
+}
+
+.messageList::-webkit-scrollbar-thumb {
+    background: var(--border-colour);
+    border: 2px solid var(--box-secondary-colour);
+}
+
+.messageItem {
+    font-size: 1.5rem;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+}
+
+.senderName {
+    white-space: nowrap;
+    font-weight: bold;
+    color: var(--input-focus-colour);
+    margin-right: 6px;
+    font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+}
+
+.selfName {
+    color: #ffd700;
+}
+
+.msgText {
+    color: var(--text-colour);
+    font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+}
+
+.inputBar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: var(--box-secondary-colour, #252533);
+    border-top: 2px solid var(--border-colour);
+}
+
+.chatInput {
+    flex: 1;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-colour);
+    color: var(--text-colour);
+    font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+    font-size: 1.5rem;
+    padding: 6px 10px;
+    outline: none;
+    box-sizing: border-box;
+    height: 38px;
+}
+
+.chatInput:focus {
+    border-color: var(--input-focus-colour);
+}

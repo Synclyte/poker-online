@@ -5,124 +5,32 @@ import { useToast } from '../../context/ToastContext';
 import { PixelBox } from '../../components/PixelBox/pixelbox';
 import styles from './Game.module.css';
 import { NumberSetting } from '../../components/NumberSetting/numbersetting';
+import { soundManager } from '../../utils/sound';
 
-type CardView =
-    | { visibility: "hidden" }
-    | { visibility: "visible"; value: string };
-
-type PlayerAction =
-    | { type: "raise"; amount: number }
-    | { type: "fold" }
-    | { type: "call" }
-    | { type: "timeout" }
-    | { type: "endMove" }
-    | {
-        type: "playSpecial";
-        card: string;
-        targetId?: number;
-        cardIndex?: number;
-    }
-    | {
-        type: "discardSpecial";
-        cardIndex: number;
-    };
-
-type MoveAction =
-    | { type: "action"; action: PlayerAction }
-    | { type: "dealHole"; count: number }
-    | { type: "removeHole"; index: number }
-    | { type: "dealCommunity"; count: number }
-    | { type: "removeCommunity"; index: number }
-    | { type: "dealSpecial"; count: number }
-    | {
-        type: "revealCard";
-        targetId: number;
-        cardIndex: number;
-    }
-    | { type: "swapBot" }
-    | { type: "swapHuman" }
-    | { type: "replaceCommunity"; index: number }
-    | { type: "replaceHole"; index: number };
-
-interface GameConfig {
-    maxPlayers: number;
-    blindSize: number;
-    minRaise: number;
-    startingChips: number;
-    specialCardLimit: number;
-    deckType: string;
-    turnTimeout: number;
-    isPrivate: boolean;
-    roundLimit: number;
-}
-
-interface MoveEvent {
-    actorId: number | null;
-    action: MoveAction;
-    private: boolean;
-}
-
-interface PlayerState {
-    id: number;
-    chips: number;
-    totalBet: number;
-    roundBet: number;
-    folded: boolean;
-    acted: boolean;
-    isTurn: boolean;
-    isDealer: boolean;
-    holeCards: (CardView | null)[];
-    specialCards: (CardView | null)[];
-    handType: string;
-}
-
-interface GameStateData {
-    roundName: string;
-    communityCards: CardView[];
-    pots: number[];
-    roundBetSum: number;
-    overallSum: number;
-    highestBet: number;
-    deckCards: number;
-    winningHandType: string;
-    players: PlayerState[];
-    modifiers: unknown[];
-    modifierVars: {
-        potMult: number;
-        anteMult: number;
-        gambleSuccessChance?: number;
-    };
-    gamesPlayed?: number;
-}
-
-interface MoveResult {
-    events: MoveEvent[];
-    gameState: GameStateData;
-}
-
-interface PlayerLobbyInfo {
-    id: number;
-    name: string;
-    isHost: boolean;
-    isBot: boolean;
-}
-
-interface Particle {
-    x: number;
-    y: number;
-    startX: number;
-    startY: number;
-    endX: number;
-    endY: number;
-    startTime: number;
-    duration: number;
-    type: number;
-}
-
-interface ChipImageInfo {
-    ref: React.RefObject<HTMLImageElement | null>;
-    size: number;
-}
+import {
+    CardView,
+    GameConfig,
+    MoveEvent,
+    GameStateData,
+    MoveResult,
+    PlayerLobbyInfo,
+    Particle,
+    ChipImageInfo,
+    ActiveModifierInfo,
+} from './game.types';
+import {
+    PlayingCard,
+    SpecialCard,
+    CardFaces,
+    getSpecialCardInfo,
+    buildSpecialCardInnerHTML,
+    parseModifier,
+} from '../../components/Card/Card';
+import { EndGameModal } from '../../components/EndGameModal/EndGameModal';
+import { ActiveModifiers } from '../../components/ActiveModifiers/ActiveModifiers';
+import { GameHeader } from '../../components/GameHeader/GameHeader';
+import { Chat } from '../../components/Chat/Chat';
+import { CardSlotBar } from '../../components/CardSlotBar/CardSlotBar';
 
 const readCssVar = (name: string, fallback: number) => {
     const varName = name.startsWith("--") ? name : `--${name}`;
@@ -146,625 +54,6 @@ const timing = {
 
 const computedStyles = getComputedStyle(document.documentElement);
 const boxBorderColour = computedStyles.getPropertyValue('--border-colour').trim() || "#dcdcdc";
-
-/** Takes a card string in format `rank:suit` (i.e. 6:d) and converts 
-* the card into a component representation
-*/
-function parseCardString(cardStr: string) {
-    if (!cardStr) {
-        return { isHidden: true, rank: "", suitSymbol: "", color: "" };
-    }
-
-    const cleanStr = cardStr.startsWith("*") ? cardStr.substring(1) : cardStr;
-    const parts = cleanStr.split(":");
-    const rawRank = (parts[0] || "").toLowerCase();
-    const rawSuit = (parts[1] || "").toLowerCase();
-
-    const suitMap: { [key: string]: { symbol: string; color: string } } = {
-        "s": { symbol: "spade", color: "#000000" },
-        "c": { symbol: "club", color: "#000000" },
-        "h": { symbol: "heart", color: "#e53935" },
-        "d": { symbol: "diamond", color: "#e53935" }
-    };
-
-    const displayRank = rawRank.toUpperCase();
-    const suitInfo = suitMap[rawSuit] || { symbol: "?", color: "#000000" };
-
-    return {
-        isHidden: false,
-        rank: displayRank,
-        suitSymbol: suitInfo.symbol,
-        color: suitInfo.color
-    };
-}
-
-interface SpecialCardInfo {
-    label: string;
-    description: string;
-    target: "none" | "selfCard" | "other" | "otherCard" | "communityCard";
-    imgSrc?: string;
-    requiresTargetIndex?: boolean;
-}
-
-const specialCardInfo: Record<string, SpecialCardInfo> = {
-    ReplaceCardSelf: {
-        label: "Replace Hole Card",
-        description: "Replace a selected hole card with a new card from the deck",
-        target: "selfCard",
-        requiresTargetIndex: true,
-        imgSrc: "/src/assets/special/special_replace_card_self.png",
-    },
-    DrawCardSelf: {
-        label: "Draw Hole Card",
-        description: "Draw an additional hole card from the deck. Visible to opponents",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_card_self.png",
-    },
-    ReplaceCardCommunity: {
-        label: "Replace Community",
-        description: "Replace a chosen community card with a new card from the deck",
-        target: "communityCard",
-        requiresTargetIndex: true,
-        imgSrc: "/src/assets/special/special_replace_card_community.png",
-    },
-    RemoveCardCommunity: {
-        label: "Remove Community",
-        description: "Remove a chosen community card",
-        target: "communityCard",
-        requiresTargetIndex: true,
-        imgSrc: "/src/assets/special/special_remove_card_community.png",
-    },
-    DrawCardCommunity: {
-        label: "Draw Community",
-        description: "Add a new community card",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_card_community.png",
-    },
-    RevealOpponentCard: {
-        label: "Reveal Card",
-        description: "Reveal a chosen hole card of a selected opponent to you",
-        target: "otherCard",
-        requiresTargetIndex: true,
-        imgSrc: "/src/assets/special/special_reveal_opponent_card.png",
-    },
-    WithdrawBet: {
-        label: "Withdraw Bet",
-        description: "Fold and recover your raw current round bet",
-        target: "none",
-        imgSrc: "/src/assets/special/special_withdraw_bet.png",
-    },
-    AnteUp: {
-        label: "Ante Up",
-        description: "Permanently double the blind and miniumum raise costs. Grants a Chip Boost special card on use",
-        target: "none",
-        imgSrc: "/src/assets/special/special_ante_up.png",
-    },
-    PotMult: {
-        label: "Pot Multiplier",
-        description: "Multiply the blind for the entirety of the current hand",
-        target: "none",
-        imgSrc: "/src/assets/special/special_pot_mult.png",
-    },
-    RaiseBlock: {
-        label: "Raise Block",
-        description: "Prevent all raises until your next turn",
-        target: "none",
-        imgSrc: "/src/assets/special/special_raise_block.png",
-    },
-    SpecialBlock: {
-        label: "Special Block",
-        description: "Prevent all special cards from being played until your next turn",
-        target: "none",
-        imgSrc: "/src/assets/special/special_special_block.png",
-    },
-    ChipBoost: {
-        label: "Chip Boost",
-        description: "Gain chips proportional to the blind cost",
-        target: "none",
-        imgSrc: "/src/assets/special/special_chip_boost.png",
-    },
-    ChipGamble: {
-        label: "Chip Gamble",
-        description: "Has a chance to give a significant number of chips proportional to blind cost or remove all chips. Failure chance increases with every use",
-        target: "none",
-        imgSrc: "/src/assets/special/special_chip_gamble.png",
-    },
-    Blackjack: {
-        label: "Blackjack",
-        description: "Use Blackjack scoring for the current hand. Provides a Draw Hole Card special card to all players on use",
-        target: "none",
-        imgSrc: "/src/assets/special/special_blackjack.png",
-    },
-    DrawHeart: {
-        label: "Draw Heart",
-        description: "Force the next drawn community card to have the Heart suit",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_heart.png",
-    },
-    DrawSpade: {
-        label: "Draw Spade",
-        description: "Force the next drawn community card to have the Spade suit",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_spade.png",
-    },
-    DrawDiamond: {
-        label: "Draw Diamond",
-        description: "Force the next drawn community card to have the Diamond suit",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_diamond.png",
-    },
-    DrawClub: {
-        label: "Draw Club",
-        description: "Force the next drawn community card to have the Club suit",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_club.png",
-    },
-    DrawFace: {
-        label: "Draw Face",
-        description: "Force the next drawn community card to be a Face card",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_face.png",
-    },
-    DrawHigh: {
-        label: "Draw High",
-        description: "Force the next community card to be a 10 or above",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_high.png",
-    },
-    DrawLow: {
-        label: "Draw Low",
-        description: "Force the next community card to be a 5 or below",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_low.png",
-    },
-    InvalidateFlush: {
-        label: "No Flushes",
-        description: "Flushes do not score",
-        target: "none",
-        imgSrc: "/src/assets/special/special_invalidate_flush.png",
-    },
-    InvalidateStraight: {
-        label: "No Straights",
-        description: "Straights do not score",
-        target: "none",
-        imgSrc: "/src/assets/special/special_invalidate_straight.png",
-    },
-    InvalidateThreeOfAKind: {
-        label: "No Three of a Kind",
-        description: "Three of a Kinds do not score",
-        target: "none",
-        imgSrc: "/src/assets/special/special_invalidate_three_of_a_kind.png",
-    },
-    InvalidateTwoPair: {
-        label: "No Two Pair",
-        description: "Two Pairs do not score",
-        target: "none",
-        imgSrc: "/src/assets/special/special_invalidate_two_pair.png",
-    },
-    InvalidateFullHouse: {
-        label: "No Full House",
-        description: "Full houses do not score",
-        target: "none",
-        imgSrc: "/src/assets/special/special_invalidate_full_house.png",
-    },
-    Special: {
-        label: "Special",
-        description: "Draw multiple special cards. Can exceed the card limit",
-        target: "none",
-        imgSrc: "/src/assets/special/special_special.png",
-    },
-    DrawHigherThanLast: {
-        label: "Draw Higher",
-        description: "Force the next drawn community card to have a rank equal to or higher than the previous draw",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_higher_than_last.png",
-    },
-    DrawLowerThanLast: {
-        label: "Draw Lower",
-        description: "Force the next drawn community card to have a rank equal to or lower than the previous draw",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_lower_than_last.png",
-    },
-    DrawSameSuitAsLast: {
-        label: "Draw Same Suit",
-        description: "Force the next drawn community card to be the same suit as the previous draw",
-        target: "none",
-        imgSrc: "/src/assets/special/special_draw_same_suit_as_last.png",
-    },
-    Discard: {
-        label: "Discard",
-        description: "Prevent any more community cards from being drawn",
-        target: "none",
-        imgSrc: "/src/assets/special/special_discard.png",
-    },
-    HandSwap: {
-        label: "Hand Swap",
-        description: "Swap hands with an opponent. Fails, consuming this card, if their hand is currently better",
-        target: "other",
-        imgSrc: "/src/assets/special/special_hand_swap.png",
-    },
-    Joker: {
-        label: "Joker",
-        description: "Convert a selected community card into a Joker",
-        target: "communityCard",
-        requiresTargetIndex: true,
-        imgSrc: "/src/assets/special/special_joker.png",
-    },
-};
-
-function getSpecialCardInfo(
-    cardStr: string,
-    blindSize?: number,
-    anteMult?: number,
-    gambleSuccessChance?: number
-): SpecialCardInfo {
-    if (!cardStr) {
-        return { label: "Special", description: "No description", target: "none" };
-    }
-    const info = specialCardInfo[cardStr] ||
-        specialCardInfo[cardStr.charAt(0).toUpperCase() + cardStr.slice(1)] ||
-        Object.entries(specialCardInfo).find(([k]) => k.toLowerCase() === cardStr.toLowerCase())?.[1];
-
-    const baseInfo = info ?? {
-        label: cardStr,
-        description: "No description",
-        target: "none",
-    };
-
-    const bSize = blindSize ?? 20;
-    const aMult = anteMult ?? 1;
-
-    if (cardStr.toLowerCase().includes("chipboost")) {
-        const boostChips = Math.round(bSize * aMult * 2);
-        return {
-            ...baseInfo,
-            description: `Instantly gain +${boostChips} chips`,
-        };
-    }
-
-    if (cardStr.toLowerCase().includes("chipgamble")) {
-        const gambleChips = Math.round(bSize * aMult * 8);
-        const chance = gambleSuccessChance ?? 0.95;
-        const failureChance = Math.round((1 - chance) * 100);
-        return {
-            ...baseInfo,
-            description: `Has a ${failureChance}% chance to lose all chips, or gains +${gambleChips} chips. Failure chance increases with every use`,
-        };
-    }
-
-    return baseInfo;
-}
-
-function buildSpecialCardFrontHTML(cardValue?: string | null): string {
-    const info = cardValue ? getSpecialCardInfo(cardValue) : null;
-    const imgHtml = info?.imgSrc
-        ? `<img src="${info.imgSrc}" alt="${info.label}" class="${styles.specialImage}" draggable="false" />`
-        : `<span>${info?.label ?? "Special"}</span>`;
-
-    return `
-        <img style="top: 0; left: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
-        <img style="top: 0; right: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
-        ${imgHtml}
-        <img style="bottom: 0; left: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
-        <img style="bottom: 0; right: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
-    `.trim();
-}
-
-function buildSpecialCardInnerHTML(cardValue: string, isSelf: boolean): string {
-    return `
-        <div class="${styles.cardInner} ${isSelf ? styles.cardFlipped : ""}">
-            <div class="${styles.cardBackFace} ${styles.specialBackFace}">
-                <img src="/src/assets/special/special.png" alt="" draggable="false" />
-            </div>
-            <div class="${styles.cardFront}">
-                ${buildSpecialCardFrontHTML(cardValue)}
-            </div>
-        </div>
-    `.trim();
-}
-
-const handNameMap: Record<string, string> = {
-    royalflush: "Royal Flush",
-    straightflush: "Straight Flush",
-    fourofakind: "Four of a Kind",
-    fullhouse: "Full House",
-    flush: "Flush",
-    straight: "Straight",
-    threeofakind: "Three of a Kind",
-    twopair: "Two Pair",
-    pair: "Pair",
-    highcard: "High Card",
-    none: "Nothing",
-};
-
-export function getSanitisedHandName(internalName: string): string {
-    return handNameMap[internalName.toLowerCase()] ?? internalName;
-}
-
-export interface ActiveModifierInfo {
-    id: string;
-    name: string;
-    description: string;
-    duration: string;
-    imgSrc: string;
-}
-
-function parseModifier(mod: any, index: number): ActiveModifierInfo {
-    let name = "Active Modifier";
-    let description = "An active game modifier.";
-    let duration = "Active";
-    let typeKey = "unknown";
-
-    let imgSrc = "/src/assets/special/special.png";
-
-    if (typeof mod.effect === "string") {
-        const eff = mod.effect.toLowerCase();
-        if (eff.includes("raisesblocked")) {
-            name = "Raise Block";
-            description = "Raises are prevented";
-            typeKey = "raises_blocked";
-            imgSrc = getSpecialCardInfo("RaiseBlock").imgSrc ?? imgSrc;
-        } else if (eff.includes("specialsblocked")) {
-            name = "Special Block";
-            description = "Special cards cannot be played";
-            typeKey = "specials_blocked";
-            imgSrc = getSpecialCardInfo("SpecialBlock").imgSrc ?? imgSrc;
-        } else if (eff.includes("blackjackscoring")) {
-            name = "Blackjack Scoring";
-            description = "Closest hand sum to 21 wins";
-            typeKey = "blackjack_scoring";
-            imgSrc = getSpecialCardInfo("Blackjack").imgSrc ?? imgSrc;
-        } else if (eff.includes("revealcard") || eff.includes("revealopponentcard")) {
-            name = "Reveal Card";
-            description = "Opponent card revealed";
-            typeKey = "reveal_card";
-            imgSrc = getSpecialCardInfo("RevealOpponentCard").imgSrc ?? imgSrc;
-        }
-    } else if (mod.effect && typeof mod.effect === "object") {
-        if ("potMultiplier" in mod.effect || "PotMultiplier" in mod.effect) {
-            const val = mod.effect.potMultiplier?.multiplier ?? mod.effect.PotMultiplier?.multiplier ?? 1.25;
-            name = `Pot Multiplier (${val}x)`;
-            description = `Multiplies all pot gains by ${val}x.`;
-            typeKey = "pot_multiplier";
-            imgSrc = getSpecialCardInfo("PotMult").imgSrc ?? imgSrc;
-        } else if ("anteMultiplier" in mod.effect || "AnteMultiplier" in mod.effect) {
-            const val = mod.effect.anteMultiplier?.multiplier ?? mod.effect.AnteMultiplier?.multiplier ?? 2.0;
-            name = `Ante Multiplier (${val}x)`;
-            description = `Multiplies minimum bets and blinds by ${val}x.`;
-            typeKey = "ante_multiplier";
-            imgSrc = getSpecialCardInfo("AnteUp").imgSrc ?? imgSrc;
-        } else if ("revealCard" in mod.effect || "RevealCard" in mod.effect || "reveal_card" in mod.effect) {
-            name = "Reveal Card";
-            description = "Opponent card revealed";
-            typeKey = "reveal_card";
-            imgSrc = getSpecialCardInfo("RevealOpponentCard").imgSrc ?? imgSrc;
-        } else if ("invalidateHand" in mod.effect || "InvalidateHand" in mod.effect) {
-            const rawHand = mod.effect.invalidateHand ?? mod.effect.InvalidateHand ?? "Hand";
-            const rawHandStr = typeof rawHand === "string" ? rawHand : String(rawHand ?? "Hand");
-            const handName = getSanitisedHandName(rawHandStr);
-            name = `${handName}s Disabled`;
-            description = `${handName}s are disabled and cannot score`;
-            typeKey = "invalidate_hand";
-
-            const cardKey = `Invalidate${rawHandStr.charAt(0).toUpperCase() + rawHandStr.slice(1)}`;
-            imgSrc = getSpecialCardInfo(cardKey).imgSrc ?? imgSrc;
-        } else if ("forceCommunityDraw" in mod.effect || "ForceCommunityDraw" in mod.effect) {
-            const rule = mod.effect.forceCommunityDraw ?? mod.effect.ForceCommunityDraw;
-            const ruleStr = typeof rule === "string" ? rule : String(rule ?? "");
-
-            const cardKey = `Draw${ruleStr}`;
-            imgSrc = getSpecialCardInfo(cardKey).imgSrc ?? imgSrc;
-
-            switch (ruleStr) {
-                case "Heart":
-                    name = "Draw Heart";
-                    description = "Community card draws forced to be Hearts";
-                    typeKey = "draw_heart";
-                    break;
-                case "Spade":
-                    name = "Draw Spade";
-                    description = "Community card draws forced to be Spades";
-                    typeKey = "draw_spade";
-                    break;
-                case "Diamond":
-                    name = "Draw Diamond";
-                    description = "Community card draws forced to be Diamonds";
-                    typeKey = "draw_diamond";
-                    break;
-                case "Club":
-                    name = "Draw Club";
-                    description = "Community card draws forced to be Clubs";
-                    typeKey = "draw_club";
-                    break;
-                case "Face":
-                    name = "Draw Face Card";
-                    description = "Community card draws forced to be Face cards";
-                    typeKey = "draw_face";
-                    break;
-                case "High":
-                    name = "Draw High Card";
-                    description = "Community card draws forced to be 10 or higher";
-                    typeKey = "draw_high";
-                    break;
-                case "Low":
-                    name = "Draw Low Card";
-                    description = "Community card draws forced to be 5 or lower";
-                    typeKey = "draw_low";
-                    break;
-                case "HigherThanLast":
-                    name = "Draw Higher";
-                    description = "Community card draws forced to be rank equal or higher than previous draw";
-                    typeKey = "draw_higher_than_last";
-                    break;
-                case "LowerThanLast":
-                    name = "Draw Lower";
-                    description = "Community card draws forced to be rank equal or lower than previous draw";
-                    typeKey = "draw_lower_than_last";
-                    break;
-                case "SameSuitAsLast":
-                    name = "Draw Same Suit";
-                    description = "Community card draws forced to be same suit as previous draw";
-                    typeKey = "draw_same_suit_as_last";
-                    break;
-                default:
-                    name = `Draw ${ruleStr}`;
-                    description = `Community card draws forced to follow ${ruleStr} rule`;
-                    typeKey = `draw_${ruleStr.toLowerCase()}`;
-                    break;
-            }
-        }
-    }
-
-    if (typeof mod.expiry === "string") {
-        if (mod.expiry.toLowerCase().includes("gameend")) {
-            duration = "Duration: Game";
-        }
-    } else if (mod.expiry && typeof mod.expiry === "object") {
-        if ("onCommunityDraw" in mod.expiry || "OnCommunityDraw" in mod.expiry) {
-            const count = mod.expiry.onCommunityDraw?.count ?? mod.expiry.OnCommunityDraw?.count ?? 1;
-            duration = `Duration: ${count} Community Draw${count > 1 ? "s" : ""}`;
-        } else if ("onPlayerTurn" in mod.expiry || "OnPlayerTurn" in mod.expiry) {
-            const count = mod.expiry.onPlayerTurn?.count ?? mod.expiry.OnPlayerTurn?.count ?? 1;
-            duration = `Duration: ${count} Turn${count > 1 ? "s" : ""}`;
-        } else if ("onRoundEnd" in mod.expiry || "OnRoundEnd" in mod.expiry) {
-            const count = mod.expiry.onRoundEnd?.count ?? mod.expiry.OnRoundEnd?.count ?? 1;
-            duration = `Duration: ${count} Round${count > 1 ? "s" : ""}`;
-        } else if ("onHandEnd" in mod.expiry || "OnHandEnd" in mod.expiry) {
-            const count = mod.expiry.onHandEnd?.count ?? mod.expiry.OnHandEnd?.count ?? 1;
-            duration = `Duration: ${count} Hand${count > 1 ? "s" : ""}`;
-        }
-    }
-
-    return {
-        id: `modifier-${typeKey}-${index}`,
-        name,
-        description,
-        duration,
-        imgSrc,
-    };
-}
-
-// Playing card component
-// Contains a deal animation (flying from card stack) and flip animation
-interface CardProps {
-    card: CardView | null;
-    cardType: "playing" | "special";
-    selected?: boolean;
-    onClick?: () => void;
-    innerRef?: React.Ref<HTMLDivElement>;
-    slotRef?: React.Ref<HTMLDivElement>;
-    slotAttribute?: string;
-}
-
-/** Playing card component representation.
-*   Handles rendering the card
-*/
-const Card: React.FC<CardProps> = ({
-    card,
-    cardType,
-    selected = false,
-    onClick,
-    innerRef,
-    slotRef,
-    slotAttribute,
-}) => {
-    const className = cardType === "special" ? styles.specialCardSlot : styles.cardSlot;
-    const isFaceUp = card?.visibility === "visible";
-
-    return (
-        <div
-            ref={slotRef}
-            data-slot-attr={slotAttribute}
-            className={[className, selected ? styles.selectedSpecialCard : ""].filter(Boolean).join(" ")}
-            onClick={onClick}
-            role={onClick ? "button" : undefined}
-            tabIndex={onClick ? 0 : undefined}
-            onKeyDown={event => {
-                if (onClick && (event.key === "Enter" || event.key === " ")) {
-                    event.preventDefault();
-                    onClick();
-                }
-            }}
-        >
-            <div
-                ref={innerRef}
-                className={[styles.cardInner, isFaceUp ? styles.cardFlipped : ""].filter(Boolean).join(" ")}
-            >
-                {card && (
-                    <CardFaces
-                        card={card}
-                        cardType={cardType}
-                    />
-                )}
-            </div>
-        </div>
-    );
-};
-
-interface CardFacesProps {
-    card: CardView;
-    cardType: "playing" | "special";
-}
-
-const CardFaces: React.FC<CardFacesProps> = ({ card, cardType }) => {
-    const cardValue = "value" in card ? card.value : null;
-    const playingInfo = cardValue && cardType === "playing" ? parseCardString(cardValue) : null;
-    const isJoker = cardType === "playing" && cardValue && cardValue.startsWith("*");
-
-    return (
-        <>
-            <div
-                className={[
-                    styles.cardBackFace,
-                    cardType === "special" ? styles.specialBackFace : styles.playingBackFace]
-                    .filter(Boolean).join(" ")}
-            >
-                {cardType === "special" && (
-                    <img src="/src/assets/special/special.png" alt="" draggable={false} />
-                )}
-            </div>
-
-            <div
-                className={[styles.cardFront, cardType === "playing" && isJoker ? styles.joker : ""].filter(Boolean).join(" ")}
-                style={cardType === "playing" ? { color: playingInfo?.color } : undefined}
-            >
-                {cardType === "special" && (
-                    <div
-                        style={{ display: "contents" }}
-                        dangerouslySetInnerHTML={{
-                            __html: buildSpecialCardFrontHTML(cardValue),
-                        }}
-                    />
-                )}
-
-                {cardType === "playing" && playingInfo && !isJoker && (
-                    <>
-                        <span>{playingInfo?.rank}</span>
-                        <img
-                            src={`/src/assets/suits/${playingInfo?.suitSymbol}.png`}
-                            alt=""
-                            draggable={false}
-                        />
-                    </>
-                )}
-
-                {cardType === "playing" && isJoker && (
-                    <>
-                        <span style={{ transform: 'rotate(90deg)', left: '-15px', top: '16px', position: 'absolute' }}>Joker</span>
-                        <span style={{ transform: 'rotate(270deg)', right: '-15px', bottom: '16px', position: 'absolute' }}>Joker</span>
-                        <img src={`/src/assets/suits/heartsmall.png`} />
-                        <img src={`/src/assets/suits/spadesmall.png`} />
-                        <img src={`/src/assets/suits/diamondsmall.png`} />
-                        <img src={`/src/assets/suits/clubsmall.png`} />
-                    </>
-                )}
-            </div>
-        </>
-    );
-};
-
-const PlayingCard: React.FC<Omit<CardProps, "cardType">> = props => (<Card {...props} cardType="playing" />);
-const SpecialCard: React.FC<Omit<CardProps, "cardType">> = props => (<Card {...props} cardType="special" />);
 
 export function Game() {
     const { roomId } = useParams<{ roomId: string }>();
@@ -1048,12 +337,21 @@ export function Game() {
             addChips(+type, count);
         }
 
+        const totalChips = Object.values(chipCounts).reduce((sum, val) => sum + val, 0);
+        const streamDurationMs = delayFormula(1) + 500;
+        soundManager.playChipStreamSFX(totalChips, streamDurationMs);
+
         return delayFormula(1);
     };
 
     // used for multi-event chains - updates the intermediate values such that animations appear to modify
     // actual values
-    const updateIntermediateState = async (playerId: number, player_chip_delta: number) => {
+    const updateIntermediateState = async (
+        playerId: number,
+        player_chip_delta: number,
+        targetRoundBet?: number,
+        targetTotalBet?: number,
+    ) => {
         const newState = JSON.parse(JSON.stringify(gameStateRef.current)) as GameStateData;
         if (!newState) return;
 
@@ -1062,6 +360,20 @@ export function Game() {
 
         player.chips += player_chip_delta;
         newState.overallSum = Math.max(newState.overallSum - player_chip_delta, 0);
+
+        if (targetRoundBet !== undefined) {
+            player.roundBet = targetRoundBet;
+        } else if (player_chip_delta < 0) {
+            player.roundBet = (player.roundBet || 0) - player_chip_delta;
+        }
+
+        if (targetTotalBet !== undefined) {
+            player.totalBet = targetTotalBet;
+        } else if (player_chip_delta < 0) {
+            player.totalBet = (player.totalBet || 0) - player_chip_delta;
+        }
+
+        newState.highestBet = Math.max(newState.highestBet || 0, player.roundBet || 0);
 
         setGameState(newState);
         gameStateRef.current = newState;
@@ -1086,7 +398,8 @@ export function Game() {
 
                 const { events, nextState } = update;
                 const previousState = gameStateRef.current;
-                const enteredPreflop = nextState.roundName === "preflop" && previousState?.roundName !== "preflop";
+                const isNewHand = previousState && (previousState.roundName === "preround" || previousState.roundName === "room" || previousState.roundName === "showdown");
+                const enteredPreflop = isNewHand || (nextState.roundName === "preflop" && previousState?.roundName !== "preflop");
                 const enteredShowdown = nextState.roundName === "showdown" && previousState?.roundName !== "showdown";
 
                 const applyState = (state: GameStateData) => {
@@ -1109,14 +422,19 @@ export function Game() {
                         roundName: nextState.roundName || "preflop",
                         communityCards: [],
                         overallSum: 0,
+                        highestBet: 0,
                         deckCards: (nextState.deckCards ?? 52) + deckCardsDealtInBatch,
-                        players: gameStateRef.current.players.map(p => ({
-                            ...p,
-                            holeCards: [],
-                            handType: '',
-                            totalBet: 0,
-                            folded: p.chips === 0,
-                        })),
+                        players: gameStateRef.current.players.map(p => {
+                            const nextP = nextState.players.find(np => np.id === p.id);
+                            return {
+                                ...p,
+                                holeCards: [],
+                                handType: '',
+                                totalBet: 0,
+                                roundBet: 0,
+                                folded: nextP ? nextP.folded : false,
+                            };
+                        }),
                     };
 
                     applyState(structuredClone(clearedState));
@@ -1133,14 +451,17 @@ export function Game() {
                     }
 
                     for (const player of nextState.players) {
-                        const blindAmount = player.roundBet;
+                        const previousPlayer = previousState.players.find(p => p.id === player.id);
+                        const blindAmount = previousPlayer
+                            ? Math.max(0, previousPlayer.chips - player.chips)
+                            : Math.max(player.roundBet, player.totalBet);
 
                         if (blindAmount <= 0) continue;
 
-                        const delay = spawnChipStream(`player-${player.id}`, "pot", blindAmount,);
+                        const delay = spawnChipStream(`player-${player.id}`, "pot", blindAmount);
 
                         await wait(delay + timing.betChipAdded);
-                        await updateIntermediateState(player.id, -blindAmount);
+                        await updateIntermediateState(player.id, -blindAmount, player.roundBet, player.totalBet);
                     }
                 };
 
@@ -1195,6 +516,12 @@ export function Game() {
                     const feltElem = document.querySelector(`.${styles.pokerFelt}`);
                     if (!feltElem) return;
                     const feltRect = feltElem.getBoundingClientRect();
+                    const feltStyle = window.getComputedStyle(feltElem);
+                    const borderLeft = parseFloat(feltStyle.borderLeftWidth) || 0;
+                    const borderTop = parseFloat(feltStyle.borderTopWidth) || 0;
+
+                    const feltOriginX = feltRect.left + borderLeft;
+                    const feltOriginY = feltRect.top + borderTop;
 
                     const currentMyId = myIdRef.current ?? myId;
                     const isSelf = actorId === currentMyId;
@@ -1223,17 +550,16 @@ export function Game() {
                     animCard.innerHTML = buildSpecialCardInnerHTML(cardValue, isSelf);
                     feltElem.appendChild(animCard);
 
-                    // Dynamically measure unscaled card dimensions
+                    // centering calculations
                     const animCardRect = animCard.getBoundingClientRect();
                     const cardWidth = animCardRect.width;
                     const cardHeight = animCardRect.height;
 
-                    // Calculate target center from pot display (center of board)
-                    const potElem = potRef.current ?? document.querySelector(`.${styles.potDisplay}`) ?? document.querySelector(`.${styles.centerBoard}`);
-                    const potRect = potElem ? potElem.getBoundingClientRect() : feltRect;
+                    const centerBoardElem = document.querySelector(`.${styles.centerBoard}`) ?? feltElem;
+                    const centerRect = centerBoardElem.getBoundingClientRect();
 
-                    const centerX = (potRect.left + potRect.width / 2) - feltRect.left;
-                    const centerY = (potRect.top + potRect.height / 2) - feltRect.top;
+                    const centerX = (centerRect.left + centerRect.width / 2) - feltOriginX;
+                    const centerY = (centerRect.top + centerRect.height / 2) - feltOriginY;
 
                     const targetX = centerX - cardWidth / 2;
                     const targetY = centerY - cardHeight / 2;
@@ -1243,8 +569,8 @@ export function Game() {
 
                     if (isSelf && slotElem) {
                         const slotRect = slotElem.getBoundingClientRect();
-                        const slotCenterX = (slotRect.left + slotRect.width / 2) - feltRect.left;
-                        const slotCenterY = (slotRect.top + slotRect.height / 2) - feltRect.top;
+                        const slotCenterX = (slotRect.left + slotRect.width / 2) - feltOriginX;
+                        const slotCenterY = (slotRect.top + slotRect.height / 2) - feltOriginY;
 
                         startX = slotCenterX - cardWidth / 2;
                         startY = slotCenterY - cardHeight / 2;
@@ -1253,8 +579,8 @@ export function Game() {
                         const seatElem = document.querySelector(`[data-seat-id="${actorId}"]`);
                         if (seatElem) {
                             const seatRect = seatElem.getBoundingClientRect();
-                            const seatCenterX = (seatRect.left + seatRect.width / 2) - feltRect.left;
-                            const seatCenterY = (seatRect.top + seatRect.height / 2) - feltRect.top;
+                            const seatCenterX = (seatRect.left + seatRect.width / 2) - feltOriginX;
+                            const seatCenterY = (seatRect.top + seatRect.height / 2) - feltOriginY;
 
                             startX = seatCenterX - cardWidth / 2;
                             startY = seatCenterY - cardHeight / 2;
@@ -1269,6 +595,7 @@ export function Game() {
                     // controls special card use animations
                     try {
                         if (isSelf) {
+                            soundManager.playSound("special_dissolve");
                             animCard.classList.add(styles.animMoveSelf);
                             await wait(timing.specialMove);
                             await wait(timing.specialPause);
@@ -1277,6 +604,7 @@ export function Game() {
                             animCard.classList.add(styles.animDissolveFaceUp);
                             await wait(timing.dissolve);
                         } else {
+                            soundManager.playSound("special_dissolve");
                             animCard.classList.add(styles.animMoveOther);
                             await wait(timing.specialMove);
 
@@ -1290,6 +618,20 @@ export function Game() {
                             await wait(timing.dissolve);
                         }
                     } finally {
+                        if (gameStateRef.current) {
+                            const newState: GameStateData = JSON.parse(JSON.stringify(gameStateRef.current));
+                            const player = newState.players.find(p => p.id === actorId);
+                            if (player) {
+                                const idx = player.specialCards.findIndex(
+                                    c => c && c.visibility === "visible" && c.value.toLowerCase() === cardValue.toLowerCase()
+                                );
+                                if (idx !== -1) {
+                                    player.specialCards.splice(idx, 1);
+                                    gameStateRef.current = newState;
+                                    setGameState(newState);
+                                }
+                            }
+                        }
                         if (slotElem) {
                             slotElem.style.opacity = "";
                         }
@@ -1320,6 +662,7 @@ export function Game() {
                             trackedBets.set(event.actorId, targetBet);
 
                             if (betDelta <= 0) {
+                                soundManager.playSound("call");
                                 const seatElem = seatRefs.current[event.actorId];
                                 if (seatElem) {
                                     seatElem.classList.remove(styles.animatingCheck);
@@ -1331,20 +674,20 @@ export function Game() {
                                 return;
                             }
 
+                            if (action.type === "call") {
+                                soundManager.playSound("call");
+                            }
+
                             const delay = spawnChipStream(`player-${event.actorId}`, "pot", betDelta);
                             await wait(delay + timing.betChipAdded);
-                            await updateIntermediateState(event.actorId, -betDelta);
+                            await updateIntermediateState(event.actorId, -betDelta, nextPlayer.roundBet, nextPlayer.totalBet);
 
                             return;
                         }
 
                         case "fold":
                         case "timeout":
-                            // fold
-                            return;
-
-                        case "endMove":
-                            // end turn
+                            soundManager.playSound("fold");
                             return;
 
                         case "playSpecial": {
@@ -1369,6 +712,7 @@ export function Game() {
 
                                 const target = await resolveTargetElement(refKey, selectorFallback);
                                 if (target) {
+                                    soundManager.playSound("dissolve");
                                     await triggerInPlaceAnimation(target, target, styles.animatingDissolve, timing.dissolve);
                                 }
                             }
@@ -1425,6 +769,7 @@ export function Game() {
                     const target = await resolveTargetElement(refKey, selectorFallback);
 
                     if (target) {
+                        soundManager.playSound("card_draw");
                         // move while face down to the target
                         await triggerInPlaceAnimation(target, source, styles.animatingDeal, timing.deal);
 
@@ -1505,6 +850,7 @@ export function Game() {
                                 // the special card deal animation varies depending on the target
                                 // if it is to an opponent, send the card to the middle of their seat and dissolve
                                 if (isSpecial && !toSelf) {
+                                    soundManager.playSound("card_draw");
                                     activeCards.push(nextCard);
                                     applyState(structuredClone(viewState));
                                     await nextFrame();
@@ -1589,6 +935,7 @@ export function Game() {
                                 (document.querySelector(`[data-hole-slot="${event.actorId}:${index}"] .${styles.cardInner}`) as HTMLDivElement | null);
 
                             if (target) {
+                                soundManager.playSound("dissolve");
                                 await triggerInPlaceAnimation(target, target, styles.animatingDissolve, timing.dissolve);
                             }
 
@@ -1608,6 +955,7 @@ export function Game() {
                                 (document.querySelector(`[data-community-slot="${index}"] .${styles.cardInner}`) as HTMLDivElement | null);
 
                             if (target) {
+                                soundManager.playSound("dissolve");
                                 await triggerInPlaceAnimation(target, target, styles.animatingDissolve, timing.dissolve);
                             }
 
@@ -1634,6 +982,7 @@ export function Game() {
                                 (document.querySelector(`[data-hole-slot="${event.actorId}:${index}"] .${styles.cardInner}`) as HTMLDivElement | null);
 
                             if (target) {
+                                soundManager.playSound("dissolve");
                                 await triggerInPlaceAnimation(target, target, styles.animatingDissolve, timing.dissolve);
                             }
 
@@ -1642,6 +991,7 @@ export function Game() {
                             await nextFrame();
 
                             if (target && nextCard.visibility === "visible") {
+                                soundManager.playSound("card_draw");
                                 await triggerInPlaceAnimation(target, target, styles.animatingFlip, timing.flip);
                             }
                             return;
@@ -1659,6 +1009,7 @@ export function Game() {
                                 (document.querySelector(`[data-community-slot="${index}"] .${styles.cardInner}`) as HTMLDivElement | null);
 
                             if (target) {
+                                soundManager.playSound("dissolve");
                                 await triggerInPlaceAnimation(target, target, styles.animatingDissolve, timing.dissolve);
                             }
 
@@ -1667,6 +1018,7 @@ export function Game() {
                             await nextFrame();
 
                             if (target && nextCard.visibility === "visible") {
+                                soundManager.playSound("card_draw");
                                 await triggerInPlaceAnimation(target, target, styles.animatingFlip, timing.flip);
                             }
                             return;
@@ -1732,7 +1084,8 @@ export function Game() {
                 const trackedBets = new Map<number, number>(
                     previousState.players.map((player) => {
                         const nextP = nextState.players.find(p => p.id === player.id);
-                        const initialBet = enteredPreflop ? (nextP?.roundBet ?? player.totalBet) : player.totalBet;
+                        const blindAmount = Math.max(0, player.chips - (nextP?.chips ?? player.chips));
+                        const initialBet = enteredPreflop ? blindAmount : player.totalBet;
                         return [player.id, initialBet];
                     }),
                 );
@@ -1756,18 +1109,19 @@ export function Game() {
                     // this is done by generating multiple consecutive pseudo-states to force expected animations
 
                     // first, card ranks/suits are given values (while not updating anything else), so cards can flip correctly
+                    const currentState = gameStateRef.current ?? previousState;
                     const preFlipState: GameStateData = {
                         ...nextState,
-                        overallSum: previousState.overallSum,
-                        pots: previousState.pots,
+                        overallSum: currentState.overallSum,
+                        pots: currentState.pots,
                         players: nextState.players.map(nextPlayer => {
-                            const previousPlayer = previousState.players.find(p => p.id === nextPlayer.id);
+                            const currPlayer = currentState.players.find(p => p.id === nextPlayer.id);
 
                             return {
                                 ...nextPlayer,
-                                chips: previousPlayer?.chips ?? nextPlayer.chips,
+                                chips: currPlayer?.chips ?? nextPlayer.chips,
                                 holeCards: nextPlayer.holeCards.map((nextCard, cardIndex) => {
-                                    const prevCard = previousPlayer?.holeCards[cardIndex];
+                                    const prevCard = currPlayer?.holeCards[cardIndex];
                                     const wasVisible = prevCard?.visibility === "visible";
                                     if (nextCard?.visibility === "visible" && !wasVisible) {
                                         return { ...nextCard, visibility: "hidden" as const };
@@ -2120,122 +1474,28 @@ export function Game() {
         }
     }, [gameState?.roundName, isMyTurn]);
 
-    const isGameOver = (gameState?.roundName === "room" || gameState?.roundName === "gameover") && (gameState?.gamesPlayed ?? 0) > 0;
-    const maxChips = Math.max(...(gameState?.players.map(p => p.chips) ?? [0]));
-    const winners = gameState?.players.filter(p => p.chips === maxChips && maxChips > 0) ?? [];
-
     return (
         <div className={styles.gameContainer}>
-            {isGameOver && (
-                <div className={styles.endGameOverlay}>
-                    <PixelBox
-                        innerClassName={styles.endGameInner}
-                        borderColour={boxBorderColour}
-                        backgroundColour="#1a1a24"
-                    >
-                        <h2 className={styles.endGameTitle}>GAME OVER</h2>
-                        <div className={styles.endGameWinnerText}>
-                            {winners.length === 1 ? (
-                                <>
-                                    <span className={styles.winnerName}>
-                                        {winners[0].id === myId
-                                            ? "YOU WIN!"
-                                            : `${lobbyPlayers.find(lp => lp.id === winners[0].id)?.name || `Player ${winners[0].id}`} Wins!`}
-                                    </span>
-                                    <div className={styles.winnerChips}>Final Chips: {winners[0].chips}</div>
-                                </>
-                            ) : winners.length > 1 ? (
-                                <>
-                                    <span className={styles.winnerName}>Tie</span>
-                                    <div className={styles.winnerChips}>
-                                        Winners: {winners.map(w => lobbyPlayers.find(lp => lp.id === w.id)?.name || `Player ${w.id}`).join(", ")} ({maxChips} chips)
-                                    </div>
-                                </>
-                            ) : (
-                                <span className={styles.winnerName}>Game Finished</span>
-                            )}
-                        </div>
+            <EndGameModal
+                gameState={gameState}
+                myId={myId}
+                isHost={isHost}
+                lobbyPlayers={lobbyPlayers}
+                boxBorderColour={boxBorderColour}
+                startNextRound={startNextRound}
+                backToRoom={() => navigate(`/lobby/${roomId}`)}
+            />
 
-                        <div className={styles.endGameActions}>
-                            {isHost && (
-                                <button type="button" className={styles.btnWrapper} onClick={startNextRound}>
-                                    <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
-                                        Start New Game
-                                    </PixelBox>
-                                </button>
-                            )}
-                            <button type="button" className={styles.btnWrapper} onClick={leaveGame}>
-                                <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
-                                    Leave Game
-                                </PixelBox>
-                            </button>
-                        </div>
-                    </PixelBox>
-                </div>
-            )}
-            <div className={styles.tableHeader}>
-                <div>Table Code: {roomId}</div>
-                <div className={styles.headerInfo}>
-                    <div className={styles.headerRoundBlock}>
-                        <span>Round:</span>
-                        <strong>{gameState?.roundName ? (gameState.roundName.charAt(0).toUpperCase() + gameState.roundName.slice(1)) : "Waiting"}</strong>
-                    </div>
-                    {config?.roundLimit !== undefined && config.roundLimit > 0 && (
-                        <div className={styles.headerHandsBlock}>
-                            <span>Hands Played:</span>
-                            <strong className={config.roundLimit - (gameState?.gamesPlayed ?? 0) <= 5 ? styles.seatTimerLow : ""}>{gameState?.gamesPlayed ?? 0}/{config.roundLimit}</strong>
-                        </div>
-                    )}
-                    <div className={styles.headerTimerBlock}>
-                        {turnTimeRemaining !== null ? (
-                            <><span>Move Time:</span><strong className={turnTimeRemaining <= 5 ? styles.seatTimerLow : ""}>{turnTimeRemaining}s</strong></>
-                        ) : (
-                            <span style={{ opacity: 0 }}>Move Time: 00s</span>
-                        )}
-                    </div>
-                </div>
-                <button type="button" className={styles.btnWrapper} onClick={leaveGame}>
-                    <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
-                        Leave Game
-                    </PixelBox>
-                </button>
-            </div>
+            <GameHeader
+                roomId={roomId}
+                gameState={gameState}
+                config={config}
+                turnTimeRemaining={turnTimeRemaining}
+                boxBorderColour={boxBorderColour}
+                leaveGame={leaveGame}
+            />
 
-            {displayedModifiers.length > 0 && (
-                <div className={styles.activeModifiersContainer}>
-                    {displayedModifiers.map((mod) => (
-                        <div
-                            key={mod.id}
-                            className={[
-                                styles.modifierItemWrapper,
-                                mod.isRemoving ? styles.removingModifier : "",
-                            ].filter(Boolean).join(" ")}
-                        >
-                            <div className={styles.modifierTooltip}>
-                                <strong>{mod.name}</strong>
-                                <span className={styles.modifierDesc}>{mod.description}</span>
-                                <span className={styles.modifierDuration}>{mod.duration}</span>
-                            </div>
-                            <PixelBox
-                                innerClassName={styles.modifierPixelBox}
-                                borderColour='var(--special-colour)'
-                                backgroundColour="#1a1a24"
-                            >
-                                <img
-                                    src={mod.imgSrc}
-                                    alt={mod.name}
-                                    onError={(e) => {
-                                        (e.target as HTMLElement).style.display = "none";
-                                    }}
-                                />
-                                <span className={styles.modifierFallbackIcon}>
-                                    {mod.name.charAt(0)}
-                                </span>
-                            </PixelBox>
-                        </div>
-                    ))}
-                </div>
-            )}
+            <ActiveModifiers displayedModifiers={displayedModifiers} />
 
             <div className={styles.pokerFelt}>
                 <canvas ref={canvasRef} className={styles.chipCanvas} />
@@ -2266,10 +1526,11 @@ export function Game() {
 
                         <div className={styles.specialDeckStack} ref={specialDeckRef}>
                             {(() => {
-                                const specialDeckLayerCount = Math.ceil((config?.specialCardLimit ?? 0));
+                                const specialDeckLayerCount = Math.ceil(config?.specialCardLimit ?? 0);
+                                if (specialDeckLayerCount <= 0) return null;
                                 const hiddenSpecialCard: CardView = { visibility: "hidden" };
 
-                                return Array.from({ length: Math.max(1, specialDeckLayerCount) }).map((_, i) => (
+                                return Array.from({ length: specialDeckLayerCount }).map((_, i) => (
                                     <div
                                         key={`special-deck-layer-${i}`}
                                         className={styles.specialDeckCard}
@@ -2281,48 +1542,40 @@ export function Game() {
                             })()}
                         </div>
 
-                        <div className={styles.communityCards}>
-                            {(() => {
-                                const totalCards = gameState?.communityCards.length ?? 0;
-                                const totalSlotsToRender = Math.max(5, totalCards);
+                        <CardSlotBar
+                            cards={gameState?.communityCards ?? []}
+                            initialSlotLimit={5}
+                            containerClassName={styles.communityCards}
+                            renderCard={(card, idx) => {
+                                const selectedSpecialInfo = selectedSpecialCardValue ? getSpecialCardInfo(selectedSpecialCardValue) : null;
+                                const canTargetCommunity = selectedSpecialInfo?.target === "communityCard" && (card !== null || selectedSpecialCardValue === "DrawCardCommunity");
+                                const isSelectedCard = canTargetCommunity && selectedTargetCardIndex === idx;
 
-                                return Array.from({ length: totalSlotsToRender }).map((_, idx) => {
-                                    const card = gameState?.communityCards[idx] ?? null;
-
-                                    if (idx >= 5 && !card) {
-                                        return null;
-                                    }
-
-                                    const selectedSpecialInfo = selectedSpecialCardValue ? getSpecialCardInfo(selectedSpecialCardValue) : null;
-                                    const canTargetCommunity = selectedSpecialInfo?.target === "communityCard" && (card !== null || selectedSpecialCardValue === "DrawCardCommunity");
-                                    const isSelectedCard = canTargetCommunity && selectedTargetCardIndex === idx;
-
-                                    return (
-                                        <div
-                                            key={`community-slot-${idx}`}
-                                            ref={el => { communitySlotRefs.current[idx] = el; }}
-                                            className={`
-                                                ${styles.cardSlot}
-                                                ${canTargetCommunity ? styles.targetableCard : ''}
-                                                ${isSelectedCard ? styles.selectedTargetCard : ''}
-                                            `}
-                                            onClick={() => {
-                                                if (canTargetCommunity) {
-                                                    selectTargetCardIndex(idx);
-                                                }
-                                            }}
-                                        >
-                                            {card && (
-                                                <PlayingCard
-                                                    card={card}
-                                                    innerRef={el => { cardInnerRefs.current[`community-${idx}`] = el; }}
-                                                />
-                                            )}
-                                        </div>
-                                    );
-                                });
-                            })()}
-                        </div>
+                                return (
+                                    <div
+                                        key={`community-slot-${idx}`}
+                                        ref={el => { communitySlotRefs.current[idx] = el; }}
+                                        className={`
+                                            ${styles.cardSlot}
+                                            ${canTargetCommunity ? styles.targetableCard : ''}
+                                            ${isSelectedCard ? styles.selectedTargetCard : ''}
+                                        `}
+                                        onClick={() => {
+                                            if (canTargetCommunity) {
+                                                selectTargetCardIndex(idx);
+                                            }
+                                        }}
+                                    >
+                                        {card && (
+                                            <PlayingCard
+                                                card={card}
+                                                innerRef={el => { cardInnerRefs.current[`community-${idx}`] = el; }}
+                                            />
+                                        )}
+                                    </div>
+                                );
+                            }}
+                        />
                     </div>
                 )}
 
@@ -2389,9 +1642,11 @@ export function Game() {
                                             <div className={styles.handPlaceholder}></div>
                                         )}
 
-                                        <div className={styles.holeCards}>
-                                            {Array.from({ length: Math.max(2, p.holeCards.length) }, (_, cardIndex) => {
-                                                const card = p.holeCards[cardIndex] ?? null;
+                                        <CardSlotBar
+                                            cards={p.holeCards}
+                                            initialSlotLimit={2}
+                                            containerClassName={styles.holeCards}
+                                            renderCard={(card, cardIndex) => {
                                                 const canTargetHoleCard = selectedSpecialInfo && (
                                                     (isMe && selectedSpecialInfo.target === "selfCard" && card !== null) ||
                                                     (!isMe && selectedSpecialInfo.target === "otherCard" && selectedSpecialTarget === p.id)
@@ -2401,7 +1656,7 @@ export function Game() {
                                                 return (
                                                     <div
                                                         data-hole-slot={`${p.id}:${cardIndex}`}
-                                                        ref={element => { holeSlotRefs.current[`${p.id}:${cardIndex}`] = element }}
+                                                        ref={element => { holeSlotRefs.current[`${p.id}:${cardIndex}`] = element; }}
                                                         key={`player-${p.id}-hole-${cardIndex}`}
                                                         className={`
                                                             ${styles.holeCardSlot}
@@ -2423,12 +1678,12 @@ export function Game() {
                                                         />
                                                     </div>
                                                 );
-                                            })}
-                                        </div>
+                                            }}
+                                        />
 
                                         {config && (config.specialCardLimit > 0 || p.specialCards.length > 0) && (
                                             <div className={styles.seatSpecialCards}>
-                                                <span className={styles.specialCardCount}>Special x{p.specialCards.length}</span>
+                                                <span className={styles.specialCardCount}><span style={{ color: "var(--special-colour)" }}>Special</span> x{p.specialCards.length}</span>
                                                 <div className={styles.seatSpecialSlot}>
                                                     <SpecialCard
                                                         card={{ visibility: "hidden" }}
@@ -2447,85 +1702,102 @@ export function Game() {
                 })}
             </div>
 
-            {gameState?.roundName !== "room" && meInGame && (
+            {gameState?.roundName !== "room" && meInGame && (config?.specialCardLimit ?? 0) > 0 && (
                 <div className={styles.specialCardBar}>
-                    <div className={styles.specialCardHand}>
-                        {Array.from({
-                            length: Math.max(config?.specialCardLimit ?? 3, meInGame.specialCards.length, 1),
-                        }).map((_, index) => {
-                            const card = meInGame.specialCards[index] ?? null;
-                            const isSelected = selectedSpecialCardIndex === index;
+                    {(() => {
+                        const limit = config?.specialCardLimit ?? 0;
 
-                            return (
-                                <div
-                                    key={`special-slot-wrapper-${index}`}
-                                    className={styles.specialSlotWrapper}
-                                    onMouseEnter={() => setHoveredSpecialIndex(index)}
-                                    onMouseLeave={() => setHoveredSpecialIndex(null)}
-                                >
-                                    {card && card.visibility === "visible" && card.value && (isSelected || hoveredSpecialIndex === index) && (() => {
-                                        const cardInfo = getSpecialCardInfo(
-                                            card.value,
-                                            config?.blindSize,
-                                            gameState?.modifierVars?.anteMult,
-                                            gameState?.modifierVars?.gambleSuccessChance
-                                        );
+                        return (
+                            <PixelBox
+                                borderColour="transparent"
+                                backgroundColour="rgba(26, 26, 36, 0.75)"
+                                className={styles.specialPixelBoxBar}
+                                innerClassName={styles.specialCardBarInner}
+                                unclipped
+                            >
+                                <CardSlotBar
+                                    cards={meInGame.specialCards}
+                                    initialSlotLimit={limit}
+                                    containerClassName={styles.specialCardHand}
+                                    containerStyle={{
+                                        width: `calc(${limit} * var(--card-slot-width) + (${limit} - 1) * var(--card-gap))`
+                                    }}
+                                    renderCard={(card, index) => {
+                                        const isSelected = selectedSpecialCardIndex === index;
+
                                         return (
                                             <div
-                                                className={[
-                                                    styles.specialSelectionText,
-                                                    isSelected ? styles.active : styles.hovered,
-                                                ].join(" ")}
+                                                key={`special-slot-wrapper-${index}`}
+                                                className={styles.specialSlotWrapper}
+                                                onMouseEnter={() => card ? setHoveredSpecialIndex(index) : undefined}
+                                                onMouseLeave={() => setHoveredSpecialIndex(null)}
                                             >
-                                                <strong>{cardInfo.label}</strong>
-                                                <span className={styles.specialSelectionDesc}>{cardInfo.description}</span>
+                                                {card && card.visibility === "visible" && card.value && (isSelected || hoveredSpecialIndex === index) && (() => {
+                                                    const cardInfo = getSpecialCardInfo(
+                                                        card.value,
+                                                        config?.blindSize,
+                                                        gameState?.modifierVars?.anteMult,
+                                                        gameState?.modifierVars?.gambleSuccessChance
+                                                    );
+                                                    return (
+                                                        <div
+                                                            className={[
+                                                                styles.specialSelectionText,
+                                                                isSelected ? styles.active : styles.hovered,
+                                                            ].join(" ")}
+                                                        >
+                                                            <strong>{cardInfo.label}</strong>
+                                                            <span className={styles.specialSelectionDesc}>{cardInfo.description}</span>
 
-                                                {isSelected && (
-                                                    <>
-                                                        {cardInfo.target === "other" &&
-                                                            selectedSpecialTarget === null && <span className={styles.specialSelectionInstruction}>Select an opponent</span>}
+                                                            {isSelected && (
+                                                                <>
+                                                                    {cardInfo.target === "other" &&
+                                                                        selectedSpecialTarget === null && <span className={styles.specialSelectionInstruction}>Select an opponent</span>}
 
-                                                        {cardInfo.target === "selfCard" &&
-                                                            cardInfo.requiresTargetIndex &&
-                                                            selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select one of your own hole cards</span>}
+                                                                    {cardInfo.target === "selfCard" &&
+                                                                        cardInfo.requiresTargetIndex &&
+                                                                        selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select one of your own hole cards</span>}
 
-                                                        {cardInfo.target === "otherCard" &&
-                                                            cardInfo.requiresTargetIndex &&
-                                                            selectedSpecialTarget !== null &&
-                                                            selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select an opponent hole card</span>}
+                                                                    {cardInfo.target === "otherCard" &&
+                                                                        cardInfo.requiresTargetIndex &&
+                                                                        selectedSpecialTarget !== null &&
+                                                                        selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select an opponent hole card</span>}
 
-                                                        {cardInfo.target === "communityCard" &&
-                                                            cardInfo.requiresTargetIndex &&
-                                                            selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select a community card</span>}
-                                                    </>
-                                                )}
+                                                                    {cardInfo.target === "communityCard" &&
+                                                                        cardInfo.requiresTargetIndex &&
+                                                                        selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select a community card</span>}
+                                                                </>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
+
+                                                <SpecialCard
+                                                    key={`special-slot-${index}`}
+                                                    slotAttribute={`special-${index}`}
+                                                    card={card}
+                                                    slotRef={element => {
+                                                        specialSlotRefs.current[index] = element;
+                                                    }}
+                                                    innerRef={element => {
+                                                        cardInnerRefs.current[`special-${index}`] = element;
+                                                    }}
+                                                    selected={isSelected}
+                                                    onClick={(card && isMyTurn && !meInGame.acted) ? () => {
+                                                        setSelectedSpecialCardIndex(
+                                                            selectedSpecialCardIndex === index ? null : index,
+                                                        );
+                                                        setSelectedSpecialTarget(null);
+                                                        setSelectedTargetCardIndex(null);
+                                                    } : undefined}
+                                                />
                                             </div>
                                         );
-                                    })()}
-
-                                    <SpecialCard
-                                        key={`special-slot-${index}`}
-                                        slotAttribute={`special-${index}`}
-                                        card={card}
-                                        slotRef={element => {
-                                            specialSlotRefs.current[index] = element;
-                                        }}
-                                        innerRef={element => {
-                                            cardInnerRefs.current[`special-${index}`] = element;
-                                        }}
-                                        selected={isSelected}
-                                        onClick={(card && isMyTurn) ? () => {
-                                            setSelectedSpecialCardIndex(
-                                                selectedSpecialCardIndex === index ? null : index,
-                                            );
-                                            setSelectedSpecialTarget(null);
-                                            setSelectedTargetCardIndex(null);
-                                        } : undefined}
-                                    />
-                                </div>
-                            );
-                        })}
-                    </div>
+                                    }}
+                                />
+                            </PixelBox>
+                        );
+                    })()}
                 </div>
             )}
 
@@ -2551,12 +1823,6 @@ export function Game() {
                                 <button type="button" className={styles.btnWrapper} disabled={isAnimating} onClick={discardSelectedSpecialCard}>
                                     <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
                                         Discard
-                                    </PixelBox>
-                                </button>
-
-                                <button type="button" className={styles.btnWrapper} disabled={!meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", "endmove")}>
-                                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                        End Turn
                                     </PixelBox>
                                 </button>
                             </div>
@@ -2598,12 +1864,6 @@ export function Game() {
                                         Fold
                                     </PixelBox>
                                 </button>
-
-                                <button type="button" className={styles.btnWrapper} disabled={!meInGame.acted} onClick={() => socket?.emit("playerMove", "endmove")}>
-                                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                        End Turn
-                                    </PixelBox>
-                                </button>
                             </div>
                         )}
                     </>
@@ -2631,6 +1891,7 @@ export function Game() {
                     </>
                 )}
             </div>
+            <Chat position="top-left" roomId={roomId} myId={myId} />
         </div>
     );
 }

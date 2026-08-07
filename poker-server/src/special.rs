@@ -206,7 +206,7 @@ impl Default for ModifierVars {
         Self { 
             pot_multiplier: 1.0, 
             ante_multiplier: 1.0, 
-            gamble_success_chance: 0.95,
+            gamble_success_chance: 0.9,
         }
     }
 }
@@ -350,10 +350,11 @@ pub(crate) enum SpecialCard {
     InvalidateThreeOfAKind,
     InvalidateTwoPair,
     InvalidateFullHouse,
-    Special, // grants a few special cards. not obtainable through normal draws
+    Special, // grants a few special cards to the user. not obtainable through normal draws
     Discard, // prevents any more community cards from being drawn this round
     HandSwap, // swap hands with a given opponent. fails (but still consumes the card) if their hand is better
     Joker, // convert selected community card into a joker
+    SpecialSpread, // give 1 special card to everyone, and 3 to the user (bypassing special limits)
 }
 impl fmt::Display for SpecialCard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -453,7 +454,7 @@ impl SpecialCard {
                 give_special_card(SpecialCard::ChipBoost, 1, true, player_id, game, events)?;
             },
             SpecialCard::PotMult => {
-                let pot_mult = 1.25;
+                let pot_mult = 1.4;
                 game.modifiers.combine_or_add_modifiers(Modifier { 
                     effect: ModifierEffect::PotMultiplier { multiplier: pot_mult }, 
                     expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
@@ -477,16 +478,16 @@ impl SpecialCard {
                 })
             },
             SpecialCard::ChipBoost => {
-                game.players[player_idx].chips += (game.ctx.blind_size as f64 * game.modifiers.vars.ante_multiplier * 2.0) as i32;
+                game.players[player_idx].chips += (game.ctx.blind_size as f64 * game.modifiers.vars.ante_multiplier * 2.5) as i32;
             },
             SpecialCard::ChipGamble => {
                 if game.ctx.rng.random_bool(game.modifiers.vars.gamble_success_chance) {
-                    game.players[player_idx].chips += (game.ctx.blind_size as f64 * game.modifiers.vars.ante_multiplier * 8.0) as i32;
-                    game.modifiers.vars.gamble_success_chance *= 0.85;
+                    game.players[player_idx].chips += (game.ctx.blind_size as f64 * game.modifiers.vars.ante_multiplier * 7.5) as i32;
+                    game.modifiers.vars.gamble_success_chance *= 0.9;
                 } else {
                     withdraw_bet(player_id, player_idx, game);
                     let player = &mut game.players[player_idx];
-                    player.chips = 0;
+                    player.chips = (player.chips as f64 * 0.5).round() as i32;
                     player.folded = true;
                     player.acted = true;
                 }
@@ -674,6 +675,10 @@ impl SpecialCard {
                 if c_index >= game.community.len() { return Err(GameError::CardIndexInvalid) }
                 game.replace_community_card(c_index, ExpandedCard::get_joker(), events)?;
             },
+            SpecialCard::SpecialSpread => {
+                // give 1 special card to all
+                game.deal_special_cards(1, events);
+            },
         }
         
         game.players[player_idx].special_cards.remove(self_idx);
@@ -787,16 +792,16 @@ static SPECIAL_CARD_WEIGHT_FNS: [(SpecialCard, fn(f64) -> f64); 31] = [
     (SpecialCard::RemoveCardCommunity, |l| 1.0 * l),
     (SpecialCard::DrawCardCommunity, |l| 1.0 * l),
     (SpecialCard::RevealOpponentCard, |l| 4.0 * l),
-    (SpecialCard::WithdrawBet, |l| 0.8 * l.powi(2)),
+    (SpecialCard::WithdrawBet, |l| 0.9 * l.powi(2)),
     (SpecialCard::AnteUp, |l| 2.0 * l.powi(2)),
-    (SpecialCard::PotMult, |l| 1.2 * l.powi(2)),
+    (SpecialCard::PotMult, |l| 1.5 * l.powi(2)),
     (SpecialCard::RaiseBlock, |_| 10.0),
     (SpecialCard::SpecialBlock, |_| 10.0),
     (SpecialCard::ChipBoost, |l| 6.0 * l),
-    (SpecialCard::ChipGamble, |l| 1.0 * l.powi(2)),
+    (SpecialCard::ChipGamble, |l| 1.1 * l.powi(2)),
     (SpecialCard::Blackjack, |_| 1.0),
-    (SpecialCard::HandSwap, |l| 1.0 * l),
-    (SpecialCard::Joker, |l| 1.0 * l),
+    (SpecialCard::HandSwap, |l| 1.2 * l),
+    (SpecialCard::Joker, |l| 1.2 * l),
     (SpecialCard::DrawHeart, |_| 10.0),
     (SpecialCard::DrawSpade, |_| 10.0),
     (SpecialCard::DrawDiamond, |_| 10.0),

@@ -29,6 +29,16 @@ interface PublicLobbyData {
 const computedStyles = getComputedStyle(document.documentElement);
 const boxBorderColour = computedStyles.getPropertyValue('--border-colour').trim();
 
+export function isValidPlayerName(name: string): boolean {
+    if (typeof name !== "string") return false;
+    for (let i = 0; i < name.length; i++) {
+        const code = name.charCodeAt(i);
+        if (code < 32 || code > 255 || code === 127) return false;
+    }
+    const sanitized = name.trim().replace(/ +/g, ' ');
+    return sanitized.length >= 3 && sanitized.length <= 12;
+}
+
 export function Home() {
     const { socket, isConnected } = useSocket();
     let navigate = useNavigate();
@@ -43,6 +53,7 @@ export function Home() {
     const [roomCode, setRoomCode] = useState<string>("");
     const [isJoining, setIsJoining] = useState<boolean>(false);
     const [publicLobbies, setPublicLobbies] = useState<PublicLobbyData[]>([]);
+    const [playerName, setPlayerName] = useState<string>(() => localStorage.getItem("playerName") || "");
 
     useEffect(() => {
         if (socket && isConnected) {
@@ -99,7 +110,7 @@ export function Home() {
         }
 
         setIsCreating(true);
-        const config = { isPrivate: isPrivate, maxPlayers: playerCapacity };
+        const config = { isPrivate: isPrivate, maxPlayers: playerCapacity, playerName: playerName.trim() || undefined };
         socket.emit("createGame", JSON.stringify(config));
     }
 
@@ -115,7 +126,7 @@ export function Home() {
         if (!targetCode) return;
 
         setIsJoining(true);
-        socket.emit("joinGame", targetCode.toLowerCase());
+        socket.emit("joinGame", { roomId: targetCode.toLowerCase(), playerName: playerName.trim() || undefined });
     }
 
     const back = () => {
@@ -131,10 +142,13 @@ export function Home() {
     }
 
     return (
+        <>
         <div className={styles.container}>
+            {/*
             <div className={styles.canvasPlaceholder}>
 
             </div>
+            */}
 
             <div className={styles.uiWrapperOuter}>
                 <PixelBox
@@ -146,6 +160,36 @@ export function Home() {
 
                     {view === 'main' && (
                         <div className={styles.menuStack}>
+                            {(() => {
+                                const isNameValid = isValidPlayerName(playerName);
+                                return (
+                                    <div className={styles.formGroup} style={{ alignSelf: 'center', width: '100%', maxWidth: '240px', alignItems: 'center', marginBottom: '0.25rem' }}>
+                                        <label style={{ fontSize: '1.4rem', color: isNameValid ? 'var(--input-focus-colour)' : '#ff5252', fontFamily: "'Jersey 10', sans-serif", textShadow: 'none' }}>
+                                            Player Name {!isNameValid && "(3-12 chars)"}
+                                        </label>
+                                        <div className={styles.inputOuter} style={{ width: '100%' }}>
+                                            <PixelBox innerClassName={styles.inputInner} borderColour={isNameValid ? boxBorderColour : '#ff5252'}>
+                                                <input
+                                                    type="text"
+                                                    maxLength={16}
+                                                    className={styles.formControl}
+                                                    style={{ color: isNameValid ? 'var(--text-colour)' : '#ff5252' }}
+                                                    value={playerName}
+                                                    placeholder="Player"
+                                                    onChange={(e) => {
+                                                        const val = e.target.value;
+                                                        setPlayerName(val);
+                                                        if (isValidPlayerName(val)) {
+                                                            localStorage.setItem("playerName", val);
+                                                        }
+                                                    }}
+                                                />
+                                            </PixelBox>
+                                        </div>
+                                    </div>
+                                );
+                            })()}
+
                             <button className={styles.btnWrapper} onClick={() => { setView('join-public'); getPublicLobbies() }}>
                                 <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
                                     Find Public Game
@@ -273,5 +317,10 @@ export function Home() {
                 </PixelBox>
             </div>
         </div>
+
+        <div className={styles.version}>
+            Version 1
+        </div>
+        </>
     );
 }

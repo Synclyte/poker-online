@@ -27,10 +27,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: var(--box-colour);
+    background-color: var(--background-colour);
     font-family: 'Jersey 10', sans-serif;
     overflow: hidden;
-    image-rendering: pixelated; 
+    image-rendering: pixelated;
     padding: 1rem;
 }
 
@@ -54,7 +54,7 @@
     position: relative;
     z-index: 10;
     width: 100%;
-    max-width: 800px;
+    max-width: 1200px;
     filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
@@ -89,11 +89,11 @@
 
 .splitLayout {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 1.5rem;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 850px) {
     .splitLayout {
         grid-template-columns: 1fr;
     }
@@ -150,7 +150,7 @@
     background: var(--background-colour);
     padding: 0.4rem 0.6rem;
     border: 2px solid var(--light-box-colour);
-    font-size: 1.3rem;
+    font-size: 1.5rem;
 }
 
 .summaryKey {
@@ -182,7 +182,7 @@
 
 .configColumns {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 1.5rem;
     align-items: start;
 }
@@ -196,19 +196,21 @@
     overflow-y: auto;
     padding-right: 0.5rem;
     scrollbar-width: thin;
-    scrollbar-color: var(--border-colour) transparent;
+    scrollbar-color: var(--border-colour) var(--box-secondary-colour);
 }
 
 .columnScrollContainer::-webkit-scrollbar {
-    width: 8px;
+    width: 10px;
 }
 
 .columnScrollContainer::-webkit-scrollbar-track {
-    background: transparent;
+    background: var(--box-secondary-colour);
+    border-left: 2px solid var(--light-box-colour);
 }
 
 .columnScrollContainer::-webkit-scrollbar-thumb {
-    background: var(--light-box-colour);
+    background: var(--border-colour);
+    border: 2px solid var(--box-secondary-colour);
 }
 
 .columnGroup {
@@ -219,7 +221,7 @@
 
 .columnHeader {
     font-family: 'Jersey 10', sans-serif;
-    font-size: 1.6rem;
+    font-size: 2rem;
     color: var(--input-focus-colour);
     border-bottom: 2px solid var(--light-box-colour);
     padding-bottom: 0.25rem;
@@ -241,7 +243,7 @@
 }
 
 .formGroup label {
-    font-size: 1.3rem;
+    font-size: 1.5rem;
 }
 
 .inputOuter {
@@ -251,7 +253,7 @@
     transform: translateZ(0);
 }
 
-.inputOuter:focus-within > div {
+.inputOuter:focus-within>div {
     --pixel-border-color: var(--input-focus-colour) !important;
 }
 
@@ -265,8 +267,8 @@
 .formControl {
     box-sizing: border-box;
     background: transparent;
-    font-size: 1.3rem;
-    font-family: 'Jersey 10', sans-serif; 
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', sans-serif;
     border: none;
     outline: none;
     width: 100%;
@@ -399,11 +401,12 @@ select.formControl option {
 }
 
 .playerName {
-    font-size: 1.3rem;
+    font-size: 1.5rem;
 }
 
 .playerRole {
-    font-size: 1.1rem;
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', monospace;
     color: var(--input-focus-colour);
 }
 
@@ -418,11 +421,11 @@ select.formControl option {
 
 .playerActions .btnInner {
     padding: 0.2rem 0.5rem;
-    font-size: 1.1rem;
+    font-size: 1.5rem;
 }
 
 .capacityBtn {
     color: var(--input-focus-colour);
-    font-size: 1.3rem;
+    font-size: 1.5rem;
     padding: 0 1rem;
 }

@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSocket } from '../../context/SocketContext';
 import { useToast } from '../../context/ToastContext';
 import { PixelBox } from '../../components/PixelBox/pixelbox';
 import { NumberSetting } from '../../components/NumberSetting/numbersetting';
+import { Chat } from '../../components/Chat/Chat';
+import { isValidPlayerName } from '../Home/home';
 import styles from './Lobby.module.css';
 
 interface Player {
@@ -87,6 +89,10 @@ export function Lobby() {
             const me = data.players.find(p => p.id === myIdRef.current);
             if (!me?.isHost) {
                 setConfig(data.config);
+            }
+
+            if (data.round && data.round !== "room" && data.round !== "gameover") {
+                navigate(`/game/${roomId}`);
             }
         };
 
@@ -304,7 +310,10 @@ export function Lobby() {
                                 {players.map((player) => (
                                     <div key={player.id} className={styles.playerItem}>
                                         <div className={styles.playerInfo}>
-                                            <span className={styles.playerName}>
+                                            <span
+                                                className={styles.playerName}
+                                                style={{ color: isValidPlayerName(player.name) ? 'var(--text-colour)' : '#ff5252' }}
+                                            >
                                                 {player.name} {player.id === myId && "(You)"}
                                             </span>
                                             <span className={styles.playerRole}>
@@ -348,6 +357,11 @@ export function Lobby() {
                                 )}
                             </div>
                         </div>
+
+                        <div className={styles.formStack}>
+                            <h2 className={styles.panelTitle}>Room Chat</h2>
+                            <Chat position="inline" showHeader={false} collapsible={false} roomId={roomId} myId={myId} />
+                        </div>
                     </div>
                 )}
 
@@ -357,7 +371,7 @@ export function Lobby() {
                         <div className={styles.configColumns}>
                             <div className={styles.columnScrollContainer}>
                                 <div className={styles.columnGroup}>
-                                    <span className={styles.columnHeader}>Rules</span>
+                                    <span className={styles.columnHeader}>Lobby</span>
 
                                     <div className={styles.formGroup}>
                                         <label>Privacy</label>
@@ -375,32 +389,12 @@ export function Lobby() {
                                         </div>
                                     </div>
 
-
                                     <NumberSetting
                                         label="Player Capacity" range="2-8"
                                         value={config.maxPlayers} min={2} max={8}
                                         onChange={(val) => updateConfig("maxPlayers", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
-
-                                    <div className={styles.formGroup}>
-                                        <label>Deck Type</label>
-                                        <div className={styles.inputOuter}>
-                                            <PixelBox innerClassName={styles.inputInner} borderColour={boxBorderColour}>
-                                                <select
-                                                    className={styles.formControl}
-                                                    value={config.deckType}
-                                                    onChange={(e) => updateConfig("deckType", e.target.value as DeckType)}
-                                                >
-                                                    {DECK_OPTIONS.map((opt) => (
-                                                        <option key={opt.value} value={opt.value}>
-                                                            {opt.label}
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                            </PixelBox>
-                                        </div>
-                                    </div>
 
                                     <NumberSetting
                                         label="Turn Timeout (s)" range="10-120"
@@ -435,6 +429,19 @@ export function Lobby() {
                                         onChange={(val) => updateConfig("minRaise", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
+                                </div>
+                            </div>
+
+                            <div className={styles.columnScrollContainer}>
+                                <div className={styles.columnGroup}>
+                                    <span className={styles.columnHeader}>Game Rules</span>
+
+                                    <NumberSetting
+                                        label="Special Card Limit" range="0-10"
+                                        value={config.specialCardLimit} min={0} max={10} step={1}
+                                        onChange={(val) => updateConfig("specialCardLimit", val)}
+                                        styles={styles} boxBorderColour={boxBorderColour}
+                                    />
 
                                     <NumberSetting
                                         label="Round Limit" range="5-100"
@@ -443,12 +450,24 @@ export function Lobby() {
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
 
-                                    <NumberSetting
-                                        label="Special Card Limit" range="0-10"
-                                        value={config.specialCardLimit} min={0} max={10} step={1}
-                                        onChange={(val) => updateConfig("specialCardLimit", val)}
-                                        styles={styles} boxBorderColour={boxBorderColour}
-                                    />
+                                    <div className={styles.formGroup}>
+                                        <label>Deck Type</label>
+                                        <div className={styles.inputOuter}>
+                                            <PixelBox innerClassName={styles.inputInner} borderColour={boxBorderColour}>
+                                                <select
+                                                    className={styles.formControl}
+                                                    value={config.deckType}
+                                                    onChange={(e) => updateConfig("deckType", e.target.value as DeckType)}
+                                                >
+                                                    {DECK_OPTIONS.map((opt) => (
+                                                        <option key={opt.value} value={opt.value}>
+                                                            {opt.label}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </PixelBox>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>

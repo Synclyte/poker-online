@@ -20,7 +20,7 @@
 
 .inner {
     position: relative;
-    border: 4px solid transparent; 
+    border: 4px solid transparent;
     background-color: var(--pixel-bg);
     width: 100%;
     height: 100%;

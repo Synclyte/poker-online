@@ -25,10 +25,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: var(--box-colour);
+    background-color: var(--background-colour);
     font-family: 'Jersey 10', sans-serif;
     overflow: hidden;
-    image-rendering: pixelated; 
+    image-rendering: pixelated;
 }
 
 .canvasPlaceholder {
@@ -149,20 +149,20 @@
     transform: translateZ(0);
 }
 
-.inputOuter:focus-within > div {
+.inputOuter:focus-within>div {
     --pixel-border-color: var(--input-focus-colour) !important;
 }
 
 .inputInner {
     background: var(--box-colour);
-    padding: 0.75rem;
+    padding: 0.5rem;
 }
 
 .formControl {
     box-sizing: border-box;
     background: transparent;
-    font-size: 1.75rem;
-    font-family: 'Jersey 10', sans-serif; 
+    font-size: 1.5rem;
+    font-family: 'Jersey 10', sans-serif;
     border: none;
     outline: none;
     width: 100%;
@@ -225,18 +225,6 @@ select.formControl option {
     overflow-y: auto;
 }
 
-.roomListInner::-webkit-scrollbar {
-    width: 12px;
-}
-.roomListInner::-webkit-scrollbar-track {
-    background: var(--box-secondary-colour);
-    border-left: 4px solid var(--light-box-colour);
-}
-.roomListInner::-webkit-scrollbar-thumb {
-    background: var(--border-colour);
-    border: 2px solid var(--box-secondary-colour);
-}
-
 .emptyState {
     text-align: center;
     color: var(--empty-box-colour);
@@ -268,4 +256,12 @@ select.formControl option {
 .roomItem .btnInner {
     padding: 0.5rem 1rem;
     font-size: 1.2rem;
+}
+
+.version {
+    position: absolute;
+    top: 0;
+    right: 10px;
+    font-size: 2rem;
+    font-family: 'Jersey 10', monospace;
 }

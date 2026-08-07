@@ -145,7 +145,6 @@ pub(crate) enum Action {
     Fold,
     Call,
     Timeout,
-    EndMove,
     PlaySpecial { 
         card: SpecialCard, 
         target_id: Option<usize>, 
@@ -160,7 +159,6 @@ impl fmt::Display for Action {
             Action::Fold => "FOLD",
             Action::Call => "CALL",
             Action::Timeout => "TIMEOUT",
-            Action::EndMove => "ENDMOVE",
             Action::PlaySpecial { 
                 card, 
                 target_id, 
@@ -189,7 +187,6 @@ impl Action {
             "fold" => Some(Action::Fold),
             "call" => Some(Action::Call),
             "timeout" => Some(Action::Timeout),
-            "endmove" => Some(Action::EndMove),
             "special" => {
                 let card_name = action_args.get(1)?;
                 let card = SpecialCard::from_str(card_name)?;
@@ -719,12 +716,12 @@ impl Game {
 
             let turn_complete = self.current_turn_complete();
             let current_player = &self.players[self.turn_index];
+            let can_play_specials = !current_player.special_cards.is_empty() && !self.modifiers.specials_blocked();
 
             if !turn_complete {
                 match current_player.player_type {
                     PlayerType::Computer(mut ai) => {
-                        let mut ai_actions: Vec<Action> = ai.calculate_next_action(self.turn_index, self);
-                        ai_actions.push(Action::EndMove);
+                        let ai_actions: Vec<Action> = ai.calculate_next_action(self.turn_index, self);
 
                         for ai_action in ai_actions {
                             let _ = self.apply_action(self.turn_index, ai_action, events);
@@ -739,7 +736,7 @@ impl Game {
                         break;
                     }
                 }
-            } else if current_player.folded || current_player.round_bet == self.bet {
+            } else if current_player.folded || (current_player.chips == 0 && !can_play_specials) || current_player.round_bet == self.bet {
                 self.advance_turn_index();
             } else {
                 break;    
@@ -754,13 +751,12 @@ impl Game {
      */
     fn apply_action(&mut self, player_index: usize, action: Action, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
         let player = self.players.get(player_index).ok_or(GameError::NoActiveTurnPlayer)?;
-        // prevent players from making a main action twice
-        if player.acted && matches!(action, Action::Raise { amount: _ } | Action::Fold | Action::Call) {
-            return Err(GameError::PrimaryMoveAlreadyMade);
+        if player.folded {
+            return Err(GameError::InvalidAction);
         }
 
-        if player.turn_ended || player.folded {
-            return Err(GameError::InvalidAction);
+        if player.acted || player.turn_ended {
+            return Err(GameError::PrimaryMoveAlreadyMade);
         }
 
         let player_id = self.players[player_index].id;
@@ -771,6 +767,7 @@ impl Game {
                 let p = &mut self.players[player_index];
                 p.folded = true;
                 p.acted = true;
+                p.turn_ended = true;
             }
             Action::Call => {
                 let p = &mut self.players[player_index];
@@ -780,6 +777,7 @@ impl Game {
                 p.total_bet += call_amount;
                 self.round_pool += call_amount;
                 p.acted = true;
+                p.turn_ended = true;
             }
             Action::Raise { amount } => {
                 if self.modifiers.raises_blocked() {
@@ -809,19 +807,12 @@ impl Game {
                     }
                 }
                 self.players[player_index].acted = true;
+                self.players[player_index].turn_ended = true;
             }
             Action::Timeout => {
                 let p = &mut self.players[player_index];
                 if !p.acted {
                     p.folded = true;
-                }
-                p.acted = true;
-                p.turn_ended = true;
-            }
-            Action::EndMove => {
-                let p = &mut self.players[player_index];
-                if !p.acted {
-                    return Err(GameError::TurnEndedBeforeAction);
                 }
                 p.acted = true;
                 p.turn_ended = true;
@@ -861,7 +852,7 @@ impl Game {
         let current_player = &self.players[self.turn_index];
         let can_play_specials = !current_player.special_cards.is_empty() && !self.modifiers.specials_blocked();
 
-        current_player.folded || (current_player.acted || current_player.chips == 0) && (!can_play_specials || current_player.turn_ended)
+        current_player.folded || current_player.acted || current_player.turn_ended || (current_player.chips == 0 && !can_play_specials)
     }
 
     fn advance_turn_index(&mut self) {
@@ -936,7 +927,11 @@ impl Game {
         if active_players.len() <= 1 {
             return true;
         }
-        active_players.iter().all(|p| p.chips == 0 || (p.acted && p.round_bet == self.bet))
+        active_players.iter().all(|p| {
+            let can_play_specials = !p.special_cards.is_empty() && !self.modifiers.specials_blocked();
+            (p.chips == 0 && (!can_play_specials || p.acted || p.turn_ended))
+                || (p.acted && p.round_bet == self.bet)
+        })
     }
 
     fn advance_to_next_round(&mut self, events: &mut Vec<MoveEvent>) {
@@ -1020,7 +1015,7 @@ impl Game {
             p.total_bet = 0;
             p.acted = false;
             p.turn_ended = false;
-            p.folded = p.chips <= 0;
+            p.folded = false;
 
             // reset ai params
             if let PlayerType::Computer(ref mut ai) = p.player_type {

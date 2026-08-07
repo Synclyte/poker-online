@@ -62,6 +62,15 @@ type ConfigPlayer =
 
 type AIType = "Risky" | "Safe" | "Smart" | "Random";
 
+interface ChatMessage {
+    id: string;
+    senderId: number | null;
+    senderName: string;
+    text: string;
+    timestamp: number;
+    isSystem?: boolean;
+}
+
 interface RoomData {
     game: GameAPI;
     config: GameConfig;
@@ -70,6 +79,7 @@ interface RoomData {
     roomHostSession: string;
     sessionTokens: string[];
     roomId: string;
+    chatMessages: ChatMessage[];
     roomCloseTimer?: NodeJS.Timeout | undefined;
 }
 
@@ -122,6 +132,25 @@ function withGameContext(
     }
 
     callback(room, session, sessionToken);
+}
+
+function sanitizeAndValidatePlayerName(inputName: string): string | null {
+    if (typeof inputName !== "string") return null;
+
+    for (let i = 0; i < inputName.length; i++) {
+        const code = inputName.charCodeAt(i);
+        if (code < 32 || code > 255 || code === 127) {
+            return null;
+        }
+    }
+
+    const sanitized = inputName.trim().replace(/ +/g, ' ');
+
+    if (sanitized.length < 3 || sanitized.length > 12) {
+        return null;
+    }
+
+    return sanitized;
 }
 
 /**
@@ -342,15 +371,15 @@ function getCompleteConfig(config: any): GameConfig | undefined {
         const parsedConfig = typeof config === "string" ? JSON.parse(config) : config;
 
         const gameConfig: GameConfig = {
-            maxPlayers: parsedConfig.maxPlayers || 4,
-            blindSize: parsedConfig.blindSize || 20,
-            minRaise: parsedConfig.minRaise || 10,
-            startingChips: parsedConfig.startingChips || 1000,
-            specialCardLimit: parsedConfig.specialCardLimit || 3,
-            deckType: parsedConfig.deckType || "standard",
-            turnTimeout: parsedConfig.turnTimeout || 40,
-            isPrivate: parsedConfig.isPrivate || false,
-            roundLimit: parsedConfig.roundLimit || 30,
+            maxPlayers: parsedConfig.maxPlayers ?? 4,
+            blindSize: typeof parsedConfig.blindSize === "number" ? parsedConfig.blindSize : 20,
+            minRaise: parsedConfig.minRaise ?? 10,
+            startingChips: parsedConfig.startingChips ?? 1000,
+            specialCardLimit: typeof parsedConfig.specialCardLimit === "number" ? parsedConfig.specialCardLimit : 3,
+            deckType: parsedConfig.deckType ?? "standard",
+            turnTimeout: parsedConfig.turnTimeout ?? 40,
+            isPrivate: parsedConfig.isPrivate ?? false,
+            roundLimit: parsedConfig.roundLimit ?? 30,
         };
 
         return gameConfig;
@@ -414,9 +443,18 @@ io.on("connection", (socket: Socket) => {
         const roomId = Math.random().toString(36).substring(2, 5);
         const sessionToken = generateSessionToken();
 
+        let initialName = "Player 0";
+        try {
+            const rawObj = JSON.parse(configStr);
+            if (rawObj && typeof rawObj.playerName === "string") {
+                const validated = sanitizeAndValidatePlayerName(rawObj.playerName);
+                if (validated) initialName = validated;
+            }
+        } catch (e) { }
+
         const hostPlayer: Player = {
             id: 0,
-            name: "Player 0",
+            name: initialName,
             isHost: true,
             isBot: false
         };
@@ -428,7 +466,8 @@ io.on("connection", (socket: Socket) => {
             activeConnections: 1,
             roomHostSession: sessionToken,
             sessionTokens: [sessionToken],
-            roomId
+            roomId,
+            chatMessages: [],
         };
 
         try {
@@ -563,7 +602,56 @@ io.on("connection", (socket: Socket) => {
         });
     });
 
-    socket.on("joinGame", (roomId: string) => {
+    socket.on("sendChatMessage", (text: string) => {
+        withGameContext(socket, false, (room, session) => {
+            if (typeof text !== "string" || !text.trim()) return;
+            const cleanedText = text.trim().substring(0, 250);
+            const senderPlayer = room.players.find(p => p.id === session.playerId);
+            const senderName = senderPlayer ? senderPlayer.name : `Player ${session.playerId}`;
+
+            const msg: ChatMessage = {
+                id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                senderId: session.playerId,
+                senderName,
+                text: cleanedText,
+                timestamp: Date.now(),
+                isSystem: false,
+            };
+
+            if (!room.chatMessages) room.chatMessages = [];
+            room.chatMessages.push(msg);
+            if (room.chatMessages.length > 100) room.chatMessages.shift();
+
+            io.to(room.roomId).emit("chatMessage", msg);
+        });
+    });
+
+    socket.on("getChatHistory", () => {
+        withGameContext(socket, false, (room) => {
+            socket.emit("chatHistory", room.chatMessages || []);
+        });
+    });
+
+    socket.on("updatePlayerName", (newName: string) => {
+        withGameContext(socket, false, (room, session) => {
+            const validated = sanitizeAndValidatePlayerName(newName);
+            if (!validated) {
+                return socket.emit("error", "Name must be 3-12 extended ASCII characters");
+            }
+            const player = room.players.find(p => p.id === session.playerId);
+            if (player) {
+                player.name = validated;
+                broadcastLobbyUpdate(room);
+            }
+        });
+    });
+
+    socket.on("joinGame", (data: string | { roomId: string, playerName?: string }) => {
+        const roomId = typeof data === "string" ? data : data?.roomId;
+        const requestedName = typeof data === "object" && typeof data.playerName === "string"
+            ? sanitizeAndValidatePlayerName(data.playerName) || undefined
+            : undefined;
+
         const room = roomMap.get(roomId);
         if (!room) return socket.emit("error", "Room does not exist");
 
@@ -628,10 +716,9 @@ io.on("connection", (socket: Socket) => {
         adjustConnections(room, 1);
 
         const newId = room.players.length > 0 ? Math.max(...room.players.map(p => p.id)) + 1 : 0;
-        // todo: allow players to choose names
         room.players.push({
             id: newId,
-            name: `Player ${newId}`,
+            name: requestedName || `Player ${newId}`,
             isHost: humanCount === 0,
             isBot: false
         });
@@ -704,7 +791,7 @@ io.on("connection", (socket: Socket) => {
         const room = roomMap.get(session.roomId);
         if (!room) return;
 
-        socket.emit("lobbyUpdate", { players: room.players, config: room.config });
+        socket.emit("lobbyUpdate", { players: room.players, config: room.config, round: room.game.get_round() });
         socket.emit("clientInfo", { playerId: session.playerId });
     });
 
@@ -805,6 +892,12 @@ io.on("connection", (socket: Socket) => {
     socket.on("startGame", () => {
         withGameContext(socket, true, (room, session) => {
             try {
+                const currentRound = room.game.get_round();
+                if (currentRound === "room" || currentRound === "gameover") {
+                    const initResult = JSON.parse(room.game.initialise());
+                    if (isError(initResult)) return socket.emit(initResult.responseType, initResult.message);
+                }
+
                 // preround -> preflop
                 const startResult = JSON.parse(room.game.start());
                 if (isError(startResult)) return socket.emit(startResult.responseType, startResult.message);

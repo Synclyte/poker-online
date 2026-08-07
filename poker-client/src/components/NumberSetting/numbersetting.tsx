@@ -1,6 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { PixelBox } from '../PixelBox/pixelbox';
 import baseStyles from './numbersetting.module.css';
+import { soundManager } from '../../utils/sound';
 
 export interface NumberSettingProps {
     label: string;
@@ -15,14 +16,14 @@ export interface NumberSettingProps {
     boxBorderColour: string;
 }
 
-export const NumberSetting = ({ 
-    label = '', 
-    range = '', 
-    value, 
-    min, 
-    max, 
-    step = 1, 
-    disabled = false, 
+export const NumberSetting = ({
+    label = '',
+    range = '',
+    value,
+    min,
+    max,
+    step = 1,
+    disabled = false,
     onChange,
     styles,
     boxBorderColour
@@ -46,6 +47,9 @@ export const NumberSetting = ({
         const performStep = () => {
             const currentVal = Number(valueRef.current) || 0;
             const nextVal = Math.max(min, Math.min(max, currentVal + (step * direction)));
+            if (nextVal !== valueRef.current) {
+                soundManager.playSound("button_click");
+            }
             onChange(nextVal);
         };
 
@@ -66,15 +70,16 @@ export const NumberSetting = ({
         <div className={styles.formGroup} style={{ flex: 1 }}>
             {label !== '' &&
                 <label>
-                    {label} { range !== '' && <span style={{ fontFamily: '"Minecraft", "Pixeloid Sans", sans-serif', fontSize: '0.6em', opacity: 0.8 }}>({range})</span> }
+                    {label} {range !== '' && <span style={{ fontFamily: '"Minecraft", "Pixeloid Sans", sans-serif', fontSize: '0.6em', opacity: 0.8 }}>({range})</span>}
                 </label>
             }
             <div className={styles.inputOuter}>
                 <PixelBox innerClassName={`${styles.inputInner} ${styles.capacityInner}`} borderColour={boxBorderColour}>
                     {!disabled && (
-                        <button 
-                            type="button" 
-                            className={`${styles.capacityBtn} ${baseStyles.capacityBtn}`} 
+                        <button
+                            type="button"
+                            data-no-sound="true"
+                            className={`${styles.capacityBtn} ${baseStyles.capacityBtn}`}
                             onMouseDown={() => startHold(-1)}
                             onMouseUp={stopHold}
                             onMouseLeave={stopHold}
@@ -84,7 +89,7 @@ export const NumberSetting = ({
                             -
                         </button>
                     )}
-                    <input 
+                    <input
                         type="number" step={step} min={min} max={max}
                         className={`${styles.formControl} ${baseStyles.capacityValue}`}
                         value={value}
@@ -92,9 +97,10 @@ export const NumberSetting = ({
                         onChange={(e) => onChange(e.target.value === '' ? '' : parseInt(e.target.value))}
                     />
                     {!disabled && (
-                        <button 
-                            type="button" 
-                            className={`${styles.capacityBtn} ${baseStyles.capacityBtn}`} 
+                        <button
+                            type="button"
+                            data-no-sound="true"
+                            className={`${styles.capacityBtn} ${baseStyles.capacityBtn}`}
                             onMouseDown={() => startHold(1)}
                             onMouseUp={stopHold}
                             onMouseLeave={stopHold}

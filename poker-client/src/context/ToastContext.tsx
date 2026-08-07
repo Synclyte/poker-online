@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react';
 import styles from "./toast.module.css";
 import { PixelBox } from '../components/PixelBox/pixelbox';
+import { soundManager } from '../utils/sound';
 
 type ToastType = "error" | "info" | "success" | "warning";
 const defaultToastDurations = {
@@ -65,7 +66,12 @@ const ToastItem = ({ toast, onRemove }: { toast: Toast, onRemove: (id: string) =
 export const ToastProvider: React.FC<{ children: ReactNode }> = ( {children} ) => {
     const [toasts, setToasts] = useState<Toast[]>([]);
 
-    const showToast = useCallback((message: string, type: ToastType, duration: number | undefined) => {
+    const showToast = useCallback((message: string, type: ToastType, duration?: number | undefined) => {
+        if (type === "error" || type === "warning") {
+            soundManager.playSound("toast_error");
+        } else {
+            soundManager.playSound("toast_success");
+        }
         const id = Math.random().toString(36).substring(2, 9);
         setToasts((prev) => [...prev, { id, message, type, duration }]);
     }, []);
