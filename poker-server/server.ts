@@ -2,7 +2,8 @@ import express from 'express';
 import { Server, Socket } from 'socket.io';
 import { createServer } from 'http';
 
-import { GameAPI } from './pkg/poker_server.js';
+// @ts-ignore
+import { GameAPI } from './pkg/poker_engine.js';
 
 const app = express();
 const httpServer = createServer(app);

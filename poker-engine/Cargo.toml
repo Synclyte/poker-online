@@ -1,9 +1,9 @@
 [package]
-name = "poker-server"
+name = "poker-engine"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "Server-side poker logic"
+description = "Poker engine logic"
 
 [dependencies]
 rand = "0.10.2"

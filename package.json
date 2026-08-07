@@ -1,14 +1,16 @@
 {
   "name": "poker",
   "version": "1.0.0",
-  "main": "index.js",
+  "private": true,
+  "workspaces": [
+    "poker-client",
+    "poker-server"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build:engine": "cd poker-engine && wasm-pack build --target nodejs --out-dir ../poker-server/pkg",
+    "dev:server": "cd poker-server && npx tsx watch server.ts",
+    "dev:client": "cd poker-client && npm run dev"
   },
   "author": "Jake Sutcliffe",
-  "license": "MIT",
-  "description": "",
-  "dependencies": {
-    "express": "^5.2.1"
-  }
+  "license": "MIT"
 }
