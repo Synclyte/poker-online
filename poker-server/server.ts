@@ -10,15 +10,22 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const absolutePkgPath = fs.existsSync(path.join(__dirname, 'pkg/poker_engine.js'))
-    ? path.join(__dirname, 'pkg/poker_engine.js')
-    : fs.existsSync(path.join(__dirname, '../pkg/poker_engine.js'))
-        ? path.join(__dirname, '../pkg/poker_engine.js')
-        : fs.existsSync(path.join(__dirname, 'pkg/poker_server.js'))
-            ? path.join(__dirname, 'pkg/poker_server.js')
-            : path.join(__dirname, '../pkg/poker_server.js');
+let GameAPI: any;
+let absolutePkgPath = '';
 
-const { GameAPI } = require(absolutePkgPath);
+try {
+    absolutePkgPath = fs.existsSync(path.join(__dirname, 'pkg/poker_engine.js'))
+        ? path.join(__dirname, 'pkg/poker_engine.js')
+        : fs.existsSync(path.join(__dirname, '../pkg/poker_engine.js'))
+            ? path.join(__dirname, '../pkg/poker_engine.js')
+            : fs.existsSync(path.join(__dirname, 'pkg/poker_server.js'))
+                ? path.join(__dirname, 'pkg/poker_server.js')
+                : path.join(__dirname, '../pkg/poker_server.js');
+
+    const pkgModule = require(absolutePkgPath);
+    GameAPI = pkgModule.GameAPI;
+} catch (err) { }
+
 type GameAPI = any;
 
 const app = express();
@@ -37,6 +44,8 @@ const publicPath = fs.existsSync(path.join(__dirname, 'public'))
         ? path.join(__dirname, '../public')
         : path.join(__dirname, '../poker-client/dist');
 
+console.log(`Serving frontend from: ${publicPath} (exists: ${fs.existsSync(publicPath)})`);
+
 if (fs.existsSync(publicPath)) {
     app.use(express.static(publicPath));
     app.get('*', (req, res) => {
@@ -44,7 +53,7 @@ if (fs.existsSync(publicPath)) {
     });
 } else {
     app.get('/', (req, res) => {
-        res.status(200).send(`Frontend failed to serve. Running at path: ${__dirname} as ${__filename}`);
+        res.status(200).send("Failed to serve frontend.");
     });
 }
 
