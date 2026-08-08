@@ -51,6 +51,7 @@ const timing = {
     specialPause: readCssVar("--anim-special-pause-ms", 300),
     specialRevealPause: readCssVar("--anim-special-reveal-pause-ms", 350),
     check: readCssVar("--anim-check-ms", 400),
+    fold: readCssVar("--anim-fold-ms", 300),
 };
 
 const computedStyles = getComputedStyle(document.documentElement);
@@ -412,6 +413,9 @@ export function Game() {
                     setGameState(state);
                 };
 
+                const cloneCurrentState = (): GameStateData =>
+                    gameStateRef.current ? (JSON.parse(JSON.stringify(gameStateRef.current)) as GameStateData) : nextState;
+
                 let deckCardsDealtInBatch = 0;
                 for (const ev of events) {
                     if (ev.action.type === "dealHole" || ev.action.type === "dealCommunity") {
@@ -691,9 +695,19 @@ export function Game() {
                         }
 
                         case "fold":
-                        case "timeout":
-                            soundManager.playSound("fold");
+                        case "timeout": {
+                            if (event.actorId !== null) {
+                                const viewState = cloneCurrentState();
+                                const player = viewState.players.find(p => p.id === event.actorId);
+                                if (player) {
+                                    player.folded = true;
+                                    applyState(structuredClone(viewState));
+                                    soundManager.playSound("fold");
+                                    await wait(timing.fold ?? 300);
+                                }
+                            }
                             return;
+                        }
 
                         case "playSpecial": {
                             const actorId = event.actorId;

@@ -997,15 +997,60 @@ impl Game {
         }
     }
 
+    fn get_next_active_player_index(&self, from_idx: usize) -> usize {
+        let len = self.players.len();
+        if len == 0 { return 0; }
+        let mut curr = (from_idx + 1) % len;
+        for _ in 0..len {
+            if self.players[curr].chips > 0 && !self.players[curr].folded {
+                return curr;
+            }
+            curr = (curr + 1) % len;
+        }
+        from_idx
+    }
+
+    fn make_player_pay_blind(&mut self, player_index: usize, blind_size: i32) -> i32 {
+        let actual_blind = blind_size.min(self.players[player_index].chips);
+        self.players[player_index].chips -= actual_blind;
+        self.players[player_index].total_bet = actual_blind;
+        self.players[player_index].round_bet = actual_blind;
+        actual_blind
+    }
+
+    fn pay_blinds(&mut self, sb_index: usize, end_index: usize) {
+        let bb_index = self.get_next_active_player_index(sb_index);
+        let blind_size = (self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32;
+
+        let sb = self.make_player_pay_blind(sb_index, blind_size / 2);
+        let bb = self.make_player_pay_blind(bb_index, blind_size);
+
+        self.round_pool = sb + bb;
+        self.bet = bb;
+        self.turn_index = end_index;
+    }
+
     fn start_new_hand(&mut self, events: &mut Vec<MoveEvent>) {
-        let active_count = self.players.iter().filter(|p| p.chips > 0).count();
-        if active_count <= 1 {
+        let active_human_count = self.players.iter()
+            .filter(|p| matches!(p.player_type, PlayerType::Human) && p.chips > 0)
+            .count();
+
+        let active_indices: Vec<usize> = self.players.iter().enumerate()
+            .filter(|(_, p)| p.chips > 0)
+            .map(|(i, _)| i)
+            .collect();
+
+        if active_indices.len() <= 1 || active_human_count == 0 {
             self.round = Round::Room;
             self.pots.clear();
             self.community.clear();
             self.round_pool = 0;
             self.bet = 0;
             return;
+        }
+
+        if self.games_played > 0 || self.players[self.dealer_index].chips == 0 {
+            self.dealer_index = self.get_next_active_player_index(self.dealer_index);
         }
 
         self.round = Round::Preflop;
@@ -1023,9 +1068,15 @@ impl Game {
             p.cards.clear();
             p.round_bet = 0;
             p.total_bet = 0;
-            p.acted = false;
-            p.turn_ended = false;
-            p.folded = false;
+            if p.chips == 0 {
+                p.acted = true;
+                p.turn_ended = true;
+                p.folded = true;
+            } else {
+                p.acted = false;
+                p.turn_ended = false;
+                p.folded = false;
+            }
 
             // reset ai params
             if let PlayerType::Computer(ref mut ai) = p.player_type {
@@ -1034,39 +1085,18 @@ impl Game {
         }
 
         self.deal_hole_cards(2, events);
-        let len = self.players.len();
 
-        let mut make_player_pay_blind = |player_index: usize, blind_size: i32| {
-            let blind_size = blind_size.min(self.players[player_index].chips);
-            self.players[player_index].chips -= blind_size;
-            self.players[player_index].total_bet = blind_size;
-            self.players[player_index].round_bet = blind_size;
-
-            return blind_size;
-        };
-
-        let mut pay_blinds = |sb_index: usize, end_index: usize| {
-            let sb_index = sb_index;
-            let bb_index = (sb_index + 1) % len;
-
-            let blind_size = (self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32;
-
-            let sb = make_player_pay_blind(sb_index, blind_size / 2);
-            let bb = make_player_pay_blind(bb_index, blind_size);
-
-            self.round_pool = sb + bb;
-            self.bet = bb;
-            self.turn_index = end_index;
-        };
-
-        // heads up rules if 2 players
-        if len == 2 {
-            pay_blinds(self.dealer_index, self.dealer_index);
+        // heads up rules if 2 active players
+        if active_indices.len() == 2 {
+            self.pay_blinds(self.dealer_index, self.dealer_index);
         // otherwise typical rules
-        } else if len > 2 {
-            pay_blinds((self.dealer_index + 1) % len, (self.dealer_index + 3) % len);
+        } else if active_indices.len() > 2 {
+            let sb_idx = self.get_next_active_player_index(self.dealer_index);
+            let bb_idx = self.get_next_active_player_index(sb_idx);
+            let first_turn = self.get_next_active_player_index(bb_idx);
+            self.pay_blinds(sb_idx, first_turn);
         } else {
-            self.turn_index = 0;
+            self.turn_index = self.get_next_active_player_index(self.dealer_index);
         }
     }
 

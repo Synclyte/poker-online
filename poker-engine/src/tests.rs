@@ -595,7 +595,7 @@ mod tests {
 
             let mut events = Vec::new();
 
-            // Play special card at start of turn (before acting)
+            // play special card at start of turn (before acting)
             game.apply_action(
                 index,
                 Action::PlaySpecial {
@@ -635,6 +635,90 @@ mod tests {
                 ),
                 Err(GameError::PrimaryMoveAlreadyMade),
             );
+        }
+
+        #[test]
+        fn test_zero_chip_player_eliminated_in_next_hand() {
+            let mut game = Game::new();
+            let config = create_valid_config(3, 0);
+            _ = game.update_config(config);
+            _ = game.initialise();
+            _ = game.start();
+
+            // player 0 loses all chips
+            game.players[0].chips = 0;
+            game.players[1].chips = 1000;
+            game.players[2].chips = 1000;
+
+            // transition to next hand via start_new_hand
+            let mut events = Vec::new();
+            game.start_new_hand(&mut events);
+
+            // player 0 should be marked folded, as they are eliminated, and not receive cards
+            assert!(game.players[0].folded, "0-chip player should be folded automatically");
+            assert!(game.players[0].acted, "0-chip player should be marked acted");
+            assert!(game.players[0].cards.is_empty(), "0-chip player should not be dealt hole cards");
+
+            // active turn must be assigned to an active player with chips
+            assert_ne!(game.turn_index, 0, "0-chip player should not receive turn");
+            assert!(game.players[game.turn_index].chips > 0, "Turn player must have chips");
+        }
+
+        #[test]
+        fn test_game_ends_when_only_one_player_has_chips() {
+            let mut game = Game::new();
+            let config = create_valid_config(3, 0);
+            _ = game.update_config(config);
+            _ = game.initialise();
+            _ = game.start();
+
+            // players 0 and 1 lose all chips
+            game.players[0].chips = 0;
+            game.players[1].chips = 0;
+            game.players[2].chips = 2000;
+
+            let mut events = Vec::new();
+            game.start_new_hand(&mut events);
+
+            // game should end and transition to Room round
+            assert_eq!(game.round, Round::Room, "Game should transition to Room round when only 1 player has chips");
+        }
+
+        #[test]
+        fn test_fold_eliminates_player_from_round_and_awards_pot() {
+            let mut game = get_configured_started_game(3, 0);
+
+            let t1 = game.get_current_turn_player_id();
+            make_move_and_end_turn(Fold, t1, &mut game);
+
+            let t2 = game.get_current_turn_player_id();
+            make_move_and_end_turn(Fold, t2, &mut game);
+
+            // active non-folded players should be 1
+            let active_count = game.players.iter().filter(|p| !p.folded).count();
+            assert_eq!(active_count, 1, "Only 1 active player should remain after others fold");
+        }
+
+        #[test]
+        fn test_game_ends_when_all_humans_eliminated() {
+            let mut game = Game::new();
+            let config = create_valid_config(1, 2); // 1 human, 2 bots
+            _ = game.update_config(config);
+            _ = game.initialise();
+            _ = game.start();
+
+            // human player (player 0) loses all chips
+            game.players[0].chips = 0;
+            game.players[1].chips = 1200;
+            game.players[2].chips = 800;
+
+            let mut events = Vec::new();
+            game.start_new_hand(&mut events);
+
+            // game ends, and bots retain their current chip balances
+            assert_eq!(game.round, Round::Room, "Game should end when all humans are eliminated");
+            assert_eq!(game.players[1].chips, 1200, "Bot 1 should retain its chip balance");
+            assert_eq!(game.players[2].chips, 800, "Bot 2 should retain its chip balance");
         }
     }
 
