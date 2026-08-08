@@ -48,7 +48,7 @@ console.log(`Serving frontend from: ${publicPath} (exists: ${fs.existsSync(publi
 
 if (fs.existsSync(publicPath)) {
     app.use(express.static(publicPath));
-    app.get('*', (req, res) => {
+    app.use((req, res) => {
         res.sendFile(path.join(publicPath, 'index.html'));
     });
 } else {
