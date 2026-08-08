@@ -31,9 +31,9 @@ const io = new Server(httpServer, {
 });
 
 // host frontend
-const publicPath = fs.existsSync(path.join(__dirname, 'public'))
-    ? path.join(__dirname, 'public')
-    : path.join(__dirname, '../public');
+const publicPath = fs.existsSync(path.join(__dirname, '../public'))
+    ? path.join(__dirname, '../public')
+    : path.join(__dirname, '../poker-client/dist');
 
 if (fs.existsSync(publicPath)) {
     app.use(express.static(publicPath));
@@ -42,7 +42,7 @@ if (fs.existsSync(publicPath)) {
     });
 } else {
     app.get('/', (req, res) => {
-        res.status(200).send('Poker Server API running. Frontend static build missing in public/ or ../poker-client/dist.');
+        res.status(200).send(`Frontend failed to serve. Running at path: ${__dirname} as ${__filename}`);
     });
 }
 
