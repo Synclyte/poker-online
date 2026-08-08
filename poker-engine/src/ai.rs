@@ -103,10 +103,16 @@ impl AI {
                     let min_r = effective_min.min(player.chips);
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.1 * self.greed * player.chips as f64) as i32;
                     let adjusted_raise = raise_amount.max(min_r).min(player.chips);
-                    self.total_bet += adjusted_raise + (game.bet - player.round_bet).min(player.chips);
-                    let upper_budget = player.chips.max(1);
-                    self.budget = self.calculate_round_budget(player, game, hand_strength).clamp((self.budget + raise_amount).min(upper_budget), upper_budget);
-                    actions.push(Action::Raise { amount: adjusted_raise });
+                    if adjusted_raise >= min_r {
+                        self.total_bet += adjusted_raise + (game.bet - player.round_bet).min(player.chips);
+                        let upper_budget = player.chips.max(1);
+                        self.budget = self.calculate_round_budget(player, game, hand_strength).clamp((self.budget + raise_amount).min(upper_budget), upper_budget);
+                        actions.push(Action::Raise { amount: adjusted_raise });
+                    } else {
+                        self.total_bet += (game.bet - player.round_bet).min(player.chips);
+                        self.budget = self.calculate_round_budget(player, game, hand_strength);
+                        actions.push(Action::Call);
+                    }
                 }
             } else {
                 actions.push(Action::Call);

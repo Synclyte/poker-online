@@ -26,18 +26,18 @@ class SoundManager {
     private soundPool: Map<string, HTMLAudioElement[]> = new Map();
     private audioSources: Map<string, string> = new Map();
     private soundVolumeMultipliers: Map<string, number> = new Map([
-        ["button_click", 0.30],
-        ["button_hover", 0.15],
-        ["card_draw_1", 0.18],
-        ["card_draw_2", 0.18],
-        ["fold", 0.45],
-        ["special_dissolve", 0.35],
-        ["dissolve", 0.40],
-        ["toast", 0.25],
-        ["toast_success", 0.25],
-        ["toast_error", 0.25],
-        ["call", 0.40],
-        ["chips", 2.0],
+        ["button_click", 0.50],
+        ["button_hover", 0.30],
+        ["card_draw_1", 0.34],
+        ["card_draw_2", 0.34],
+        ["fold", 0.85],
+        ["special_dissolve", 0.65],
+        ["dissolve", 0.75,],
+        ["toast", 0.5],
+        ["toast_success", 0.5],
+        ["toast_error", 0.5],
+        ["call", 0.8],
+        ["chips", 4.0],
     ]);
     private toggleDrawState: boolean = false;
     private isMuted: boolean = false;
@@ -55,6 +55,20 @@ class SoundManager {
         this.audioSources.set("toast_success", toastSuccessSfx);
         this.audioSources.set("toast_error", toastErrorSfx);
         this.audioSources.set("call", callSfx);
+
+        if (typeof window !== "undefined" && window.localStorage) {
+            const savedVol = localStorage.getItem("globalVolume");
+            if (savedVol !== null) {
+                const parsed = parseFloat(savedVol);
+                if (Number.isFinite(parsed)) {
+                    this.volume = Math.min(1, Math.max(0, parsed));
+                }
+            }
+            const savedMute = localStorage.getItem("globalMuted");
+            if (savedMute === "true") {
+                this.isMuted = true;
+            }
+        }
     }
 
     private getAudioContext(): AudioContext | null {
@@ -76,7 +90,7 @@ class SoundManager {
     }
 
     public playSound(sound: SoundEffect, volumeScale: number = 1.0) {
-        if (this.isMuted) return;
+        if (this.isMuted || this.volume <= 0) return;
 
         let soundKey: string = sound;
         if (sound === "card_draw") {
@@ -87,7 +101,6 @@ class SoundManager {
         const src = this.audioSources.get(soundKey);
         if (!src) return;
 
-        // gets pool for parallel playback of sounds
         try {
             let pool = this.soundPool.get(soundKey);
             if (!pool) {
@@ -115,12 +128,8 @@ class SoundManager {
         this.soundVolumeMultipliers.set("chips", Math.min(3, Math.max(0, multiplier)));
     }
 
-    /**
-     * Procedural generator for chip stream sounds
-     * Given a chip count and duration, creates chip clacking sounds matching the chip stream
-     */
     public playChipStreamSFX(chipCount: number, durationMs: number) {
-        if (this.isMuted) return;
+        if (this.isMuted || this.volume <= 0) return;
 
         try {
             const ctx = this.getAudioContext();
@@ -136,11 +145,9 @@ class SoundManager {
             for (let i = 0; i < numClacks; i++) {
                 const time = now + i * intervalSec;
 
-                // parameters for chip sound
                 const baseFreq = 2600 + (Math.random() * 400 - 200);
                 const duration = 0.025;
 
-                // Noise burst for surface click
                 const bufferSize = ctx.sampleRate * duration;
                 const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
                 const data = buffer.getChannelData(0);
@@ -170,9 +177,7 @@ class SoundManager {
                 noiseNode.start(time);
                 noiseNode.stop(time + duration);
             }
-        } catch (e) {
-            // this can crash the animation queue and make the game unplayable if it fails
-        }
+        } catch (e) { }
     }
 
     public initGlobalListeners() {
@@ -183,7 +188,7 @@ class SoundManager {
         document.addEventListener("click", (e) => {
             const target = e.target as HTMLElement | null;
             const btn = target?.closest("button, .btnWrapper, [role='button'], input[type='submit'], input[type='button']");
-            if (btn && !btn.hasAttribute("data-no-sound") && !btn.closest("[data-no-sound='true']")) {
+            if (btn && !btn.hasAttribute("data-no-sound") && !btn.closest("[data-no-sound='true']") && !btn.hasAttribute("data-no-click-sound") && !btn.closest("[data-no-click-sound='true']")) {
                 this.playSound("button_click");
             }
         }, true);
@@ -191,9 +196,11 @@ class SoundManager {
         document.addEventListener("mouseover", (e) => {
             const target = e.target as HTMLElement | null;
             const btn = target?.closest("button, .btnWrapper, [role='button'], input[type='submit'], input[type='button']");
-            if (btn && !(btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX) {
-                (btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX = true;
-                this.playSound("button_hover", 0.5);
+            if (btn && !btn.hasAttribute("data-no-hover-sound") && !btn.closest("[data-no-hover-sound='true']")) {
+                if (!(btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX) {
+                    (btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX = true;
+                    this.playSound("button_hover", 0.5);
+                }
             }
         }, true);
 
@@ -209,15 +216,51 @@ class SoundManager {
 
     public toggleMute(): boolean {
         this.isMuted = !this.isMuted;
+        if (typeof window !== "undefined" && window.localStorage) {
+            localStorage.setItem("globalMuted", this.isMuted.toString());
+        }
+        this.updateAllAudioVolumes();
         return this.isMuted;
     }
 
     public setVolume(vol: number) {
         this.volume = Math.min(1, Math.max(0, vol));
+        if (typeof window !== "undefined" && window.localStorage) {
+            localStorage.setItem("globalVolume", this.volume.toString());
+        }
+        if (this.volume > 0 && this.isMuted) {
+            this.isMuted = false;
+            if (typeof window !== "undefined" && window.localStorage) {
+                localStorage.setItem("globalMuted", "false");
+            }
+        }
+        this.updateAllAudioVolumes();
+    }
+
+    public getVolume(): number {
+        return this.volume;
     }
 
     public getMuted(): boolean {
         return this.isMuted;
+    }
+
+    public setMuted(muted: boolean) {
+        this.isMuted = muted;
+        if (typeof window !== "undefined" && window.localStorage) {
+            localStorage.setItem("globalMuted", muted.toString());
+        }
+        this.updateAllAudioVolumes();
+    }
+
+    private updateAllAudioVolumes() {
+        for (const [soundKey, pool] of this.soundPool.entries()) {
+            const soundMultiplier = this.soundVolumeMultipliers.get(soundKey) ?? 0.5;
+            const vol = (this.isMuted || this.volume <= 0) ? 0 : Math.min(1, Math.max(0, this.volume * soundMultiplier));
+            for (const audio of pool) {
+                audio.volume = vol;
+            }
+        }
     }
 }
 

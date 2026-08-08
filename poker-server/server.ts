@@ -10,15 +10,22 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const pkgPath = fs.existsSync(path.join(__dirname, 'pkg/poker_engine.js'))
-    ? './pkg/poker_engine.js'
-    : fs.existsSync(path.join(__dirname, '../pkg/poker_engine.js'))
-        ? '../pkg/poker_engine.js'
-        : fs.existsSync(path.join(__dirname, 'pkg/poker_server.js'))
-            ? './pkg/poker_server.js'
-            : '../pkg/poker_server.js';
+let GameAPI: any;
+let absolutePkgPath = '';
 
-const { GameAPI } = require(pkgPath);
+try {
+    absolutePkgPath = fs.existsSync(path.join(__dirname, 'pkg/poker_engine.js'))
+        ? path.join(__dirname, 'pkg/poker_engine.js')
+        : fs.existsSync(path.join(__dirname, '../pkg/poker_engine.js'))
+            ? path.join(__dirname, '../pkg/poker_engine.js')
+            : fs.existsSync(path.join(__dirname, 'pkg/poker_server.js'))
+                ? path.join(__dirname, 'pkg/poker_server.js')
+                : path.join(__dirname, '../pkg/poker_server.js');
+
+    const pkgModule = require(absolutePkgPath);
+    GameAPI = pkgModule.GameAPI;
+} catch (err) { }
+
 type GameAPI = any;
 
 const app = express();
@@ -33,16 +40,20 @@ const io = new Server(httpServer, {
 // host frontend
 const publicPath = fs.existsSync(path.join(__dirname, 'public'))
     ? path.join(__dirname, 'public')
-    : path.join(__dirname, '../public');
+    : fs.existsSync(path.join(__dirname, '../public'))
+        ? path.join(__dirname, '../public')
+        : path.join(__dirname, '../poker-client/dist');
+
+console.log(`Serving frontend from: ${publicPath} (exists: ${fs.existsSync(publicPath)})`);
 
 if (fs.existsSync(publicPath)) {
     app.use(express.static(publicPath));
-    app.get('*', (req, res) => {
+    app.use((req, res) => {
         res.sendFile(path.join(publicPath, 'index.html'));
     });
 } else {
     app.get('/', (req, res) => {
-        res.status(200).send('Poker Server API running. Frontend static build missing in public/ or ../poker-client/dist.');
+        res.status(200).send("Failed to serve frontend.");
     });
 }
 

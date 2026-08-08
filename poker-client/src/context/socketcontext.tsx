@@ -1,7 +1,18 @@
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = 'http://localhost:3000';
+const getSocketUrl = () => {
+    if (typeof window !== 'undefined') {
+        const { hostname, protocol } = window.location;
+        if (hostname === 'localhost' || hostname === '127.0.0.1') {
+            return `${protocol}//${hostname}:3000`;
+        }
+        return window.location.origin;
+    }
+    return 'http://localhost:3000';
+};
+
+const SOCKET_URL = getSocketUrl();
 
 interface SocketContextType {
     socket: Socket | null;
