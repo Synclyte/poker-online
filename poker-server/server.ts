@@ -10,15 +10,15 @@ const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const pkgPath = fs.existsSync(path.join(__dirname, 'pkg/poker_engine.js'))
-    ? './pkg/poker_engine.js'
+const absolutePkgPath = fs.existsSync(path.join(__dirname, 'pkg/poker_engine.js'))
+    ? path.join(__dirname, 'pkg/poker_engine.js')
     : fs.existsSync(path.join(__dirname, '../pkg/poker_engine.js'))
-        ? '../pkg/poker_engine.js'
+        ? path.join(__dirname, '../pkg/poker_engine.js')
         : fs.existsSync(path.join(__dirname, 'pkg/poker_server.js'))
-            ? './pkg/poker_server.js'
-            : '../pkg/poker_server.js';
+            ? path.join(__dirname, 'pkg/poker_server.js')
+            : path.join(__dirname, '../pkg/poker_server.js');
 
-const { GameAPI } = require(pkgPath);
+const { GameAPI } = require(absolutePkgPath);
 type GameAPI = any;
 
 const app = express();
@@ -31,9 +31,11 @@ const io = new Server(httpServer, {
 });
 
 // host frontend
-const publicPath = fs.existsSync(path.join(__dirname, '../public'))
-    ? path.join(__dirname, '../public')
-    : path.join(__dirname, '../poker-client/dist');
+const publicPath = fs.existsSync(path.join(__dirname, 'public'))
+    ? path.join(__dirname, 'public')
+    : fs.existsSync(path.join(__dirname, '../public'))
+        ? path.join(__dirname, '../public')
+        : path.join(__dirname, '../poker-client/dist');
 
 if (fs.existsSync(publicPath)) {
     app.use(express.static(publicPath));
