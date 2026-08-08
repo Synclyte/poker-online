@@ -724,7 +724,12 @@ impl Game {
                         let ai_actions: Vec<Action> = ai.calculate_next_action(self.turn_index, self);
 
                         for ai_action in ai_actions {
-                            let _ = self.apply_action(self.turn_index, ai_action, events);
+                            let res = self.apply_action(self.turn_index, ai_action, events);
+                            if res.is_err() {
+                                if self.apply_action(self.turn_index, Action::Call, events).is_err() {
+                                    let _ = self.apply_action(self.turn_index, Action::Fold, events);
+                                }
+                            }
                         }
                         
                         if self.current_turn_complete() {
@@ -800,10 +805,15 @@ impl Game {
                 self.round_pool += raise_cost;
                 self.bet = p.round_bet.max(self.bet);
 
-                for (i, other) in self.players.iter_mut().enumerate() {
-                    if i != player_index && !other.folded && other.chips > 0 {
-                        other.acted = false;
-                        other.turn_ended = false;
+                if true_raise > 0 {
+                    for (i, other) in self.players.iter_mut().enumerate() {
+                        if i != player_index && !other.folded {
+                            let can_play_specials = !other.special_cards.is_empty() && !self.modifiers.specials_blocked();
+                            if other.chips > 0 || can_play_specials {
+                                other.acted = false;
+                                other.turn_ended = false;
+                            }
+                        }
                     }
                 }
                 self.players[player_index].acted = true;

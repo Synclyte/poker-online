@@ -5,6 +5,8 @@ import styles from './home.module.css';
 import { useToast } from '../../context/toastcontext';
 import { PixelBox } from '../../components/PixelBox/pixelbox';
 import { NumberSetting } from '../../components/NumberSetting/numbersetting';
+import { soundManager } from '../../utils/sound';
+import { getAssetUrl } from '../../utils/assets';
 
 type MenuView = "create" | "join-public" | "join-code" | "main";
 type Round = "room" | "preround" | "turn" | "river" | "showdown";
@@ -54,6 +56,45 @@ export function Home() {
     const [isJoining, setIsJoining] = useState<boolean>(false);
     const [publicLobbies, setPublicLobbies] = useState<PublicLobbyData[]>([]);
     const [playerName, setPlayerName] = useState<string>(() => localStorage.getItem("playerName") || "");
+
+    const [volume, setVolumeState] = useState<number>(() => {
+        const saved = localStorage.getItem("globalVolume");
+        const parsed = saved !== null ? parseFloat(saved) : soundManager.getVolume();
+        return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : 0.6;
+    });
+
+    const [isMuted, setIsMutedState] = useState<boolean>(() => {
+        return localStorage.getItem("globalMuted") === "true";
+    });
+
+    useEffect(() => {
+        soundManager.setVolume(volume);
+        soundManager.setMuted(isMuted);
+    }, [volume, isMuted]);
+
+    const handleVolumeChange = (newVol: number) => {
+        const clamped = Math.min(1, Math.max(0, newVol));
+        setVolumeState(clamped);
+        localStorage.setItem("globalVolume", clamped.toString());
+        soundManager.setVolume(clamped);
+
+        if (clamped === 0) {
+            setIsMutedState(true);
+            localStorage.setItem("globalMuted", "true");
+        } else if (isMuted) {
+            setIsMutedState(false);
+            localStorage.setItem("globalMuted", "false");
+        }
+    };
+
+    const toggleMute = () => {
+        const nextMute = !isMuted;
+        setIsMutedState(nextMute);
+        localStorage.setItem("globalMuted", nextMute.toString());
+        soundManager.setMuted(nextMute);
+    };
+
+    const soundState: 0 | 1 | 2 = (isMuted || volume === 0) ? 0 : (volume <= 0.5 ? 1 : 2);
 
     useEffect(() => {
         if (socket && isConnected) {
@@ -316,6 +357,45 @@ export function Home() {
                         )}
                     </PixelBox>
                 </div>
+            </div>
+
+            <div className={styles.volumeControlWidget}>
+                <button
+                    type="button"
+                    className={styles.soundBtn}
+                    onClick={toggleMute}
+                    title={isMuted ? "Unmute" : "Mute"}
+                >
+                    <div className={`${styles.soundIcon} ${styles[`soundState${soundState}`]}`}>
+                        <img
+                            src={
+                                soundState === 0 ? getAssetUrl('/src/assets/ui/sound_off.png') :
+                                    soundState === 1 ? getAssetUrl('/src/assets/ui/sound_low.png') :
+                                        getAssetUrl('/src/assets/ui/sound_high.png')
+                            }
+                            alt={`Sound State ${soundState}`}
+                            onError={(e) => {
+                                (e.target as HTMLElement).style.display = 'none';
+                            }}
+                        />
+                    </div>
+                </button>
+
+                <input
+                    type="range"
+                    data-no-sound="true"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    className={styles.volumeSliderVertical}
+                    value={isMuted ? 0 : volume}
+                    onInput={(e) => handleVolumeChange(parseFloat((e.target as HTMLInputElement).value))}
+                    onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                />
+
+                <span className={styles.volumePercentage}>
+                    {isMuted ? "0%" : `${Math.round(volume * 100)}%`}
+                </span>
             </div>
 
             <div className={styles.version}>
