@@ -94,7 +94,7 @@ export function Home() {
         soundManager.setMuted(nextMute);
     };
 
-    const soundState: 0 | 1 | 2 = (isMuted || volume === 0) ? 0 : (volume <= 0.5 ? 1 : 2);
+    const soundState: 0 | 1 | 2 | 3 = (isMuted || volume === 0) ? 0 : (volume <= 0.33 ? 1 : (volume <= 0.66 ? 2 : 3));
 
     useEffect(() => {
         if (socket && isConnected) {
@@ -362,6 +362,8 @@ export function Home() {
             <div className={styles.volumeControlWidget}>
                 <button
                     type="button"
+                    data-no-sound="true"
+                    data-no-hover-sound="true"
                     className={styles.soundBtn}
                     onClick={toggleMute}
                     title={isMuted ? "Unmute" : "Mute"}
@@ -370,8 +372,9 @@ export function Home() {
                         <img
                             src={
                                 soundState === 0 ? getAssetUrl('/src/assets/ui/sound_off.png') :
-                                    soundState === 1 ? getAssetUrl('/src/assets/ui/sound_low.png') :
-                                        getAssetUrl('/src/assets/ui/sound_high.png')
+                                soundState === 1 ? getAssetUrl('/src/assets/ui/sound_low.png') :
+                                soundState === 2 ? getAssetUrl('/src/assets/ui/sound_medium.png') :
+                                                   getAssetUrl('/src/assets/ui/sound_high.png')
                             }
                             alt={`Sound State ${soundState}`}
                             onError={(e) => {
@@ -384,6 +387,7 @@ export function Home() {
                 <input
                     type="range"
                     data-no-sound="true"
+                    data-no-hover-sound="true"
                     min={0}
                     max={1}
                     step={0.01}
@@ -399,7 +403,7 @@ export function Home() {
             </div>
 
             <div className={styles.version}>
-                Version 1
+                Version 2
             </div>
         </>
     );

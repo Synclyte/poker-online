@@ -17,6 +17,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Run Rust Tests
+        run: cargo test --manifest-path poker-engine/Cargo.toml
+
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 

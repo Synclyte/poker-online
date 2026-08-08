@@ -291,18 +291,18 @@ select.formControl option {
     justify-content: center;
     line-height: 1;
     transition: transform 0.1s;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
 }
 
 .soundBtn:hover {
-    transform: scale(1.15);
+    transform: scale(1.08);
 }
 
 .soundIcon {
     position: relative;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;

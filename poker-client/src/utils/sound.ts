@@ -188,7 +188,7 @@ class SoundManager {
         document.addEventListener("click", (e) => {
             const target = e.target as HTMLElement | null;
             const btn = target?.closest("button, .btnWrapper, [role='button'], input[type='submit'], input[type='button']");
-            if (btn && !btn.hasAttribute("data-no-sound") && !btn.closest("[data-no-sound='true']")) {
+            if (btn && !btn.hasAttribute("data-no-sound") && !btn.closest("[data-no-sound='true']") && !btn.hasAttribute("data-no-click-sound") && !btn.closest("[data-no-click-sound='true']")) {
                 this.playSound("button_click");
             }
         }, true);
@@ -196,9 +196,11 @@ class SoundManager {
         document.addEventListener("mouseover", (e) => {
             const target = e.target as HTMLElement | null;
             const btn = target?.closest("button, .btnWrapper, [role='button'], input[type='submit'], input[type='button']");
-            if (btn && !(btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX) {
-                (btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX = true;
-                this.playSound("button_hover", 0.5);
+            if (btn && !btn.hasAttribute("data-no-hover-sound") && !btn.closest("[data-no-hover-sound='true']")) {
+                if (!(btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX) {
+                    (btn as unknown as { _hasHoveredSFX?: boolean })._hasHoveredSFX = true;
+                    this.playSound("button_hover", 0.5);
+                }
             }
         }, true);
 
