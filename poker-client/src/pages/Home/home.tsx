@@ -72,6 +72,10 @@ export function Home() {
         soundManager.setMuted(isMuted);
     }, [volume, isMuted]);
 
+    useEffect(() => {
+        document.title = "Poker? - Home";
+    }, []);
+
     const handleVolumeChange = (newVol: number) => {
         const clamped = Math.min(1, Math.max(0, newVol));
         setVolumeState(clamped);

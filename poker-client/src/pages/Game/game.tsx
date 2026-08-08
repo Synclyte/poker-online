@@ -192,6 +192,10 @@ export function Game() {
         }
     }, [config]);
 
+    useEffect(() => {
+        document.title = "Poker? - In Game";
+    }, []);
+
     // chip flying animation handler 
     useEffect(() => {
         const canvas = canvasRef.current;

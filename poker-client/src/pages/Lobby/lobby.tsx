@@ -75,6 +75,14 @@ export function Lobby() {
     const isHost = players.find(p => p.id === myId)?.isHost || false;
 
     useEffect(() => {
+        if (roomId) {
+            document.title = `Poker? - Room ${roomId.toUpperCase()}`;
+        } else {
+            document.title = 'Poker? - Lobby';
+        }
+    }, [roomId]);
+
+    useEffect(() => {
         if (!socket || !isConnected) {
             showToast("Disconnected from server", "error");
             navigate('/');
