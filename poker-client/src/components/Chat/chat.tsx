@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useSocket } from '../../context/SocketContext';
+import { useSocket } from '../../context/socketcontext';
 import { PixelBox } from '../PixelBox/pixelbox';
-import styles from './Chat.module.css';
+import styles from './chat.module.css';
 
 export interface ChatMessage {
     id: string;

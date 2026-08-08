@@ -25,21 +25,29 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+          cache-dependency-path: poker-server/package-lock.json
 
-      - name: Build Server
+      - name: Build Project
         run: |
-          wasm-pack build --target nodejs
-          npm ci
-          npm run build --if-present
+          wasm-pack build poker-engine --target nodejs --out-dir ../poker-server/pkg
+          cd poker-client
+          npm install
+          npm run build
+          mkdir -p ../poker-server/public
+          cp -r dist/* ../poker-server/public
+          cd ../poker-server
+          npm install
+          npm run build
 
-      - name: Deploy to Web Server
+      - name: Deploy to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
-          source: "dist/,pkg/,package.json,package-lock.json"
-          target: "/var/www/poker-server"
+          source: "poker-server/dist/,poker-server/pkg/,poker-server/public/,poker-server/package.json,poker-server/package-lock.json"
+          target: "/var/www/poker.synclyte.online"
+          strip_components: 1
 
       - name: Restart PM2 Process
         uses: appleboy/ssh-action@v1.0.3
@@ -48,7 +56,7 @@ jobs:
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
           script: |
-            cd /var/www/poker-server
+            cd /var/www/poker.synclyte.online
             npm install --omit=dev
             pm2 restart poker-server || pm2 start dist/server.js --name poker-server
             pm2 save

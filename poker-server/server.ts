@@ -1,13 +1,50 @@
 import express from 'express';
 import { Server, Socket } from 'socket.io';
 import { createServer } from 'http';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
-// @ts-ignore
-import { GameAPI } from './pkg/poker_engine.js';
+const require = createRequire(import.meta.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const pkgPath = fs.existsSync(path.join(__dirname, 'pkg/poker_engine.js'))
+    ? './pkg/poker_engine.js'
+    : fs.existsSync(path.join(__dirname, '../pkg/poker_engine.js'))
+        ? '../pkg/poker_engine.js'
+        : fs.existsSync(path.join(__dirname, 'pkg/poker_server.js'))
+            ? './pkg/poker_server.js'
+            : '../pkg/poker_server.js';
+
+const { GameAPI } = require(pkgPath);
+type GameAPI = any;
 
 const app = express();
+app.set('trust proxy', 1);
+
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: '*' } });
+const io = new Server(httpServer, {
+    cors: { origin: '*' },
+    transports: ['websocket', 'polling']
+});
+
+// host frontend
+const publicPath = fs.existsSync(path.join(__dirname, 'public'))
+    ? path.join(__dirname, 'public')
+    : path.join(__dirname, '../poker-client/dist');
+
+if (fs.existsSync(publicPath)) {
+    app.use(express.static(publicPath));
+    app.get('*', (req, res) => {
+        res.sendFile(path.join(publicPath, 'index.html'));
+    });
+} else {
+    app.get('/', (req, res) => {
+        res.status(200).send('Poker Server API running. Frontend static build missing in public/ or ../poker-client/dist.');
+    });
+}
 
 interface GameConfig {
     maxPlayers: number;
@@ -952,7 +989,9 @@ io.on("connection", (socket: Socket) => {
     });
 });
 
-const PORT = 3000;
-httpServer.listen(PORT, () => {
-    console.log(`Poker started on port ${PORT}`);
+const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || '0.0.0.0';
+
+httpServer.listen(PORT, HOST, () => {
+    console.log(`Poker started on ${HOST}:${PORT}`);
 });

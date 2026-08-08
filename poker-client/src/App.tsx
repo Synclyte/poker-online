@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { SocketProvider } from './context/SocketContext';
-import { ToastProvider } from './context/ToastContext';
+import { SocketProvider } from './context/socketcontext';
+import { ToastProvider } from './context/toastcontext';
 import { soundManager } from './utils/sound';
 
 import { Home } from './pages/Home/home';
@@ -15,15 +15,15 @@ export default function App() {
 
     return (
         <ToastProvider>
-        <SocketProvider>
-        <Router>
-        <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/lobby/:roomId" element={<Lobby />} />
-            <Route path="/game/:roomId" element={<Game />} />
-        </Routes>
-        </Router>
-        </SocketProvider>
+            <SocketProvider>
+                <Router>
+                    <Routes>
+                        <Route path="/" element={<Home />} />
+                        <Route path="/lobby/:roomId" element={<Lobby />} />
+                        <Route path="/game/:roomId" element={<Game />} />
+                    </Routes>
+                </Router>
+            </SocketProvider>
         </ToastProvider>
     );
 }

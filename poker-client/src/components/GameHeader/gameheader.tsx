@@ -1,6 +1,6 @@
 import React from 'react';
 import { PixelBox } from '../PixelBox/pixelbox';
-import styles from '../../pages/Game/Game.module.css';
+import styles from '../../pages/Game/game.module.css';
 import { GameConfig, GameStateData } from '../../pages/Game/game.types';
 
 interface GameHeaderProps {
@@ -22,7 +22,7 @@ export const GameHeader: React.FC<GameHeaderProps> = ({
 }) => {
     return (
         <div className={styles.tableHeader}>
-            <div>Room Code: {roomId.toUpperCase()}</div>
+            <div>Room Code: {roomId?.toUpperCase() ?? "---"}</div>
             <div className={styles.headerInfo}>
                 <div className={styles.headerRoundBlock}>
                     <span>Round:</span>
@@ -30,8 +30,8 @@ export const GameHeader: React.FC<GameHeaderProps> = ({
                         {gameState?.roundName === "gameover"
                             ? "Game Over"
                             : gameState?.roundName
-                            ? gameState.roundName.charAt(0).toUpperCase() + gameState.roundName.slice(1)
-                            : "Waiting"}
+                                ? gameState.roundName.charAt(0).toUpperCase() + gameState.roundName.slice(1)
+                                : "Waiting"}
                     </strong>
                 </div>
                 {config?.roundLimit !== undefined && config.roundLimit > 0 && (

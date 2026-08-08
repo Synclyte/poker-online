@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useSocket } from '../../context/SocketContext';
-import { useToast } from '../../context/ToastContext';
+import { useSocket } from '../../context/socketcontext';
+import { useToast } from '../../context/toastcontext';
 import { PixelBox } from '../../components/PixelBox/pixelbox';
-import styles from './Game.module.css';
+import styles from './game.module.css';
 import { NumberSetting } from '../../components/NumberSetting/numbersetting';
 import { soundManager } from '../../utils/sound';
 
@@ -25,12 +25,12 @@ import {
     getSpecialCardInfo,
     buildSpecialCardInnerHTML,
     parseModifier,
-} from '../../components/Card/Card';
-import { EndGameModal } from '../../components/EndGameModal/EndGameModal';
-import { ActiveModifiers } from '../../components/ActiveModifiers/ActiveModifiers';
-import { GameHeader } from '../../components/GameHeader/GameHeader';
-import { Chat } from '../../components/Chat/Chat';
-import { CardSlotBar } from '../../components/CardSlotBar/CardSlotBar';
+} from '../../components/Card/card';
+import { EndGameModal } from '../../components/EndGameModal/endgamemodal';
+import { ActiveModifiers } from '../../components/ActiveModifiers/activemodifiers';
+import { GameHeader } from '../../components/GameHeader/gameheader';
+import { Chat } from '../../components/Chat/chat';
+import { CardSlotBar } from '../../components/CardSlotBar/cardslotbar';
 
 const readCssVar = (name: string, fallback: number) => {
     const varName = name.startsWith("--") ? name : `--${name}`;
@@ -1732,9 +1732,9 @@ export function Game() {
                                                 onMouseEnter={() => card ? setHoveredSpecialIndex(index) : undefined}
                                                 onMouseLeave={() => setHoveredSpecialIndex(null)}
                                             >
-                                                {card && card.visibility === "visible" && card.value && (isSelected || hoveredSpecialIndex === index) && (() => {
+                                                {card && (card as any).visibility === "visible" && (card as any).value && (isSelected || hoveredSpecialIndex === index) && (() => {
                                                     const cardInfo = getSpecialCardInfo(
-                                                        card.value,
+                                                        (card as any).value,
                                                         config?.blindSize,
                                                         gameState?.modifierVars?.anteMult,
                                                         gameState?.modifierVars?.gambleSuccessChance

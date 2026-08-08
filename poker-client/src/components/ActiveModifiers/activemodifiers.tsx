@@ -1,6 +1,6 @@
 import React from 'react';
 import { PixelBox } from '../PixelBox/pixelbox';
-import styles from '../../pages/Game/Game.module.css';
+import styles from '../../pages/Game/game.module.css';
 import { ActiveModifierInfo } from '../../pages/Game/game.types';
 
 interface ActiveModifiersProps {

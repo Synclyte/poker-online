@@ -1,5 +1,5 @@
 import React, { ReactNode } from 'react';
-import styles from './PixelBox.module.css';
+import styles from './pixelbox.module.css';
 
 interface PixelBoxProps extends React.HTMLAttributes<HTMLDivElement> {
     children?: ReactNode;
@@ -10,20 +10,20 @@ interface PixelBoxProps extends React.HTMLAttributes<HTMLDivElement> {
     unclipped?: boolean;
 }
 
-export function PixelBox({ 
-    children, 
-    borderColour = '', 
+export function PixelBox({
+    children,
+    borderColour = '',
     backgroundColour = '',
-    className = '', 
+    className = '',
     innerClassName = '',
     unclipped = false,
-    ...props 
+    ...props
 }: PixelBoxProps) {
     if (unclipped) {
         return (
-            <div 
+            <div
                 className={`${styles.wrapper} ${styles.unclippedWrapper} ${className}`}
-                style={{ 
+                style={{
                     '--pixel-border-color': borderColour,
                     '--pixel-bg': backgroundColour
                 } as React.CSSProperties}
@@ -39,9 +39,9 @@ export function PixelBox({
     }
 
     return (
-        <div 
+        <div
             className={`${styles.wrapper} ${className}`}
-            style={{ 
+            style={{
                 '--pixel-border-color': borderColour,
                 '--pixel-bg': backgroundColour
             } as React.CSSProperties}

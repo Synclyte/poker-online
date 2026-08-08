@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useSocket } from '../../context/SocketContext';
-import { useToast } from '../../context/ToastContext';
+import { useSocket } from '../../context/socketcontext';
+import { useToast } from '../../context/toastcontext';
 import { PixelBox } from '../../components/PixelBox/pixelbox';
 import { NumberSetting } from '../../components/NumberSetting/numbersetting';
-import { Chat } from '../../components/Chat/Chat';
+import { Chat } from '../../components/Chat/chat';
 import { isValidPlayerName } from '../Home/home';
-import styles from './Lobby.module.css';
+import styles from './lobby.module.css';
 
 interface Player {
     id: number;

@@ -1,5 +1,5 @@
 import React from 'react';
-import styles from '../../pages/Game/Game.module.css';
+import styles from '../../pages/Game/game.module.css';
 import { CardView, SpecialCardInfo, ActiveModifierInfo } from '../../pages/Game/game.types';
 
 export function parseCardString(cardStr: string) {
