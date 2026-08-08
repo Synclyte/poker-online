@@ -1,6 +1,7 @@
 import React from 'react';
 import styles from '../../pages/Game/game.module.css';
 import { CardView, SpecialCardInfo, ActiveModifierInfo } from '../../pages/Game/game.types';
+import { getAssetUrl } from '../../utils/assets';
 
 export function parseCardString(cardStr: string) {
     if (!cardStr) {
@@ -258,50 +259,53 @@ export function getSpecialCardInfo(
     const bSize = blindSize ?? 20;
     const aMult = anteMult ?? 1;
 
+    let finalInfo = {
+        ...baseInfo,
+        imgSrc: baseInfo.imgSrc ? getAssetUrl(baseInfo.imgSrc) : baseInfo.imgSrc,
+    };
+
     if (cardStr.toLowerCase().includes("chipboost")) {
-        // requires modification if this multiplier is changed - this is calculated
-        // entirely separately from the server
         const boostChips = Math.round(bSize * aMult * 2.5);
-        return {
-            ...baseInfo,
+        finalInfo = {
+            ...finalInfo,
             description: `Gain +${boostChips} chips, scaling with blind cost`,
         };
-    }
-
-    if (cardStr.toLowerCase().includes("chipgamble")) {
-        // same as above
+    } else if (cardStr.toLowerCase().includes("chipgamble")) {
         const gambleChips = Math.round(bSize * aMult * 7.5);
         const chance = gambleSuccessChance ?? 0.9;
         const successChance = Math.round(chance * 100);
-        return {
-            ...baseInfo,
+        finalInfo = {
+            ...finalInfo,
             description: `${successChance}% chance to gain +${gambleChips} chips, scaling with blind cost. Fold and lose half of your chips on failure, with failure chance increasing with every use`,
         };
     }
 
-    return baseInfo;
+    return finalInfo;
 }
 
 export function buildSpecialCardFrontHTML(cardValue?: string | null): string {
     const info = cardValue ? getSpecialCardInfo(cardValue) : null;
-    const imgHtml = info?.imgSrc
-        ? `<img src="${info.imgSrc}" alt="${info.label}" class="${styles.specialImage}" draggable="false" />`
+    const imgSrc = info?.imgSrc ? getAssetUrl(info.imgSrc) : "";
+    const imgHtml = imgSrc
+        ? `<img src="${imgSrc}" alt="${info?.label ?? ''}" class="${styles.specialImage}" draggable="false" />`
         : `<span>${info?.label ?? "Special"}</span>`;
 
+    const smallMark = getAssetUrl("/src/assets/special/specialsmall.png");
     return `
-        <img style="top: 0; left: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
-        <img style="top: 0; right: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
+        <img style="top: 0; left: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
+        <img style="top: 0; right: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
         ${imgHtml}
-        <img style="bottom: 0; left: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
-        <img style="bottom: 0; right: 0" class="${styles.specialMark}" src="/src/assets/special/specialsmall.png" draggable="false" />
+        <img style="bottom: 0; left: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
+        <img style="bottom: 0; right: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
     `.trim();
 }
 
 export function buildSpecialCardInnerHTML(cardValue: string, isSelf: boolean): string {
+    const specialImg = getAssetUrl("/src/assets/special/special.png");
     return `
         <div class="${styles.cardInner} ${isSelf ? styles.cardFlipped : ""}">
             <div class="${styles.cardBackFace} ${styles.specialBackFace}">
-                <img src="/src/assets/special/special.png" alt="" draggable="false" />
+                <img src="${specialImg}" alt="" draggable="false" />
             </div>
             <div class="${styles.cardFront}">
                 ${buildSpecialCardFrontHTML(cardValue)}
@@ -561,7 +565,7 @@ export const CardFaces: React.FC<CardFacesProps> = ({ card, cardType }) => {
                     .filter(Boolean).join(" ")}
             >
                 {cardType === "special" && (
-                    <img src="/src/assets/special/special.png" alt="" draggable={false} />
+                    <img src={getAssetUrl("/src/assets/special/special.png")} alt="" draggable={false} />
                 )}
             </div>
 
@@ -582,7 +586,7 @@ export const CardFaces: React.FC<CardFacesProps> = ({ card, cardType }) => {
                     <>
                         <span>{playingInfo?.rank}</span>
                         <img
-                            src={`/src/assets/suits/${playingInfo?.suitSymbol}.png`}
+                            src={getAssetUrl(`/src/assets/suits/${playingInfo?.suitSymbol}.png`)}
                             alt=""
                             draggable={false}
                         />
@@ -593,10 +597,10 @@ export const CardFaces: React.FC<CardFacesProps> = ({ card, cardType }) => {
                     <>
                         <span style={{ transform: 'rotate(90deg)', left: '-15px', top: '16px', position: 'absolute' }}>Joker</span>
                         <span style={{ transform: 'rotate(270deg)', right: '-15px', bottom: '16px', position: 'absolute' }}>Joker</span>
-                        <img src={`/src/assets/suits/heartsmall.png`} />
-                        <img src={`/src/assets/suits/spadesmall.png`} />
-                        <img src={`/src/assets/suits/diamondsmall.png`} />
-                        <img src={`/src/assets/suits/clubsmall.png`} />
+                        <img src={getAssetUrl('/src/assets/suits/heartsmall.png')} />
+                        <img src={getAssetUrl('/src/assets/suits/spadesmall.png')} />
+                        <img src={getAssetUrl('/src/assets/suits/diamondsmall.png')} />
+                        <img src={getAssetUrl('/src/assets/suits/clubsmall.png')} />
                     </>
                 )}
             </div>

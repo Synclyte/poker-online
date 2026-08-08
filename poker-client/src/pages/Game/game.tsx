@@ -6,6 +6,7 @@ import { PixelBox } from '../../components/PixelBox/pixelbox';
 import styles from './game.module.css';
 import { NumberSetting } from '../../components/NumberSetting/numbersetting';
 import { soundManager } from '../../utils/sound';
+import { getAssetUrl } from '../../utils/assets';
 
 import {
     CardView,
@@ -172,12 +173,12 @@ export function Game() {
         }
     }
     useEffect(() => {
-        loadImg(chipImage1, '/src/assets/chips/chip1.png');
-        loadImg(chipImage10, '/src/assets/chips/chip10.png');
-        loadImg(chipImage25, '/src/assets/chips/chip25.png');
-        loadImg(chipImage50, '/src/assets/chips/chip50.png');
-        loadImg(chipImage250, '/src/assets/chips/chip250.png');
-        loadImg(chipImage1000, '/src/assets/chips/chip1000.png');
+        loadImg(chipImage1, getAssetUrl('/src/assets/chips/chip1.png'));
+        loadImg(chipImage10, getAssetUrl('/src/assets/chips/chip10.png'));
+        loadImg(chipImage25, getAssetUrl('/src/assets/chips/chip25.png'));
+        loadImg(chipImage50, getAssetUrl('/src/assets/chips/chip50.png'));
+        loadImg(chipImage250, getAssetUrl('/src/assets/chips/chip250.png'));
+        loadImg(chipImage1000, getAssetUrl('/src/assets/chips/chip1000.png'));
         chipImageDict.current = imageDict;
     }, []);
 
