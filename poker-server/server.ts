@@ -33,7 +33,7 @@ const io = new Server(httpServer, {
 // host frontend
 const publicPath = fs.existsSync(path.join(__dirname, 'public'))
     ? path.join(__dirname, 'public')
-    : path.join(__dirname, '../poker-client/dist');
+    : path.join(__dirname, '../public');
 
 if (fs.existsSync(publicPath)) {
     app.use(express.static(publicPath));
