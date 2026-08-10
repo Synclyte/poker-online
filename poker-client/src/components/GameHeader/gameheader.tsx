@@ -7,8 +7,6 @@ interface GameHeaderProps {
     gameState: GameStateData | null;
     config: GameConfig | null;
     turnTimeRemaining: number | null;
-    boxBorderColour: string;
-    leaveGame: () => void;
 }
 
 export const GameHeader: React.FC<GameHeaderProps> = ({
