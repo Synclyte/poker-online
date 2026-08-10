@@ -38,6 +38,8 @@ export function PixelBox({
         );
     }
 
+    const isTransparent = borderColour === "transparent" || borderColour === "none";
+
     return (
         <div
             className={`${styles.wrapper} ${className}`}
@@ -47,9 +49,9 @@ export function PixelBox({
             } as React.CSSProperties}
             {...props}
         >
-            <div className={styles.borderBg} />
-            <div className={styles.innerBg} />
-            <div className={`${styles.inner} ${innerClassName}`}>
+            {!isTransparent && <div className={styles.borderBg} />}
+            {!isTransparent && <div className={styles.innerBg} />}
+            <div className={`${styles.inner} ${isTransparent ? styles.transparentInner : ''} ${innerClassName}`}>
                 {children}
             </div>
         </div>

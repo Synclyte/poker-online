@@ -1,5 +1,4 @@
 import React from 'react';
-import { PixelBox } from '../PixelBox/pixelbox';
 import styles from '../../pages/Game/game.module.css';
 import { GameConfig, GameStateData } from '../../pages/Game/game.types';
 
@@ -17,12 +16,10 @@ export const GameHeader: React.FC<GameHeaderProps> = ({
     gameState,
     config,
     turnTimeRemaining,
-    boxBorderColour,
-    leaveGame,
 }) => {
     return (
         <div className={styles.tableHeader}>
-            <div>Room Code: {roomId?.toUpperCase() ?? "---"}</div>
+            <div className={styles.headerRoomCode}>Room Code: <strong>{roomId?.toUpperCase() ?? "---"}</strong></div>
             <div className={styles.headerInfo}>
                 <div className={styles.headerRoundBlock}>
                     <span>Round:</span>
@@ -53,11 +50,6 @@ export const GameHeader: React.FC<GameHeaderProps> = ({
                     )}
                 </div>
             </div>
-            <button type="button" className={styles.btnWrapper} onClick={leaveGame}>
-                <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
-                    Leave Game
-                </PixelBox>
-            </button>
         </div>
     );
 };

@@ -7,6 +7,7 @@ import { NumberSetting } from '../../components/NumberSetting/numbersetting';
 import { Chat } from '../../components/Chat/chat';
 import { isValidPlayerName } from '../Home/home';
 import styles from './lobby.module.css';
+import { getAssetUrl } from '../../utils/assets';
 
 interface Player {
     id: number;
@@ -334,13 +335,13 @@ export function Lobby() {
                                                 {!player.isBot && (
                                                     <button className={styles.btnWrapper} title="Promote to Host" onClick={() => promoteHost(player.id)}>
                                                         <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                                            +
+                                                            <img src={getAssetUrl('/src/assets/ui/promote.png')}></img>
                                                         </PixelBox>
                                                     </button>
                                                 )}
                                                 <button className={styles.btnWrapper} title="Kick Player" onClick={() => kickPlayer(player.id)}>
                                                     <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
-                                                        x
+                                                        <img src={getAssetUrl('/src/assets/ui/exit.png')}></img>
                                                     </PixelBox>
                                                 </button>
                                             </div>
@@ -375,12 +376,10 @@ export function Lobby() {
 
                 {view === 'configure' && (
                     <div className={styles.configContainer}>
-                        <h2 className={styles.panelTitle}>Options</h2>
-                        <div className={styles.configColumns}>
-                            <div className={styles.columnScrollContainer}>
-                                <div className={styles.columnGroup}>
-                                    <span className={styles.columnHeader}>Lobby</span>
-
+                        <div className={styles.splitLayout}>
+                            <div className={styles.formStack}>
+                                <h2 className={styles.panelTitle}>Lobby</h2>
+                                <div className={styles.botFormStack}>
                                     <div className={styles.formGroup}>
                                         <label>Privacy</label>
                                         <div className={styles.inputOuter}>
@@ -413,10 +412,9 @@ export function Lobby() {
                                 </div>
                             </div>
 
-                            <div className={styles.columnScrollContainer}>
-                                <div className={styles.columnGroup}>
-                                    <span className={styles.columnHeader}>Stakes</span>
-
+                            <div className={styles.formStack}>
+                                <h2 className={styles.panelTitle}>Stakes</h2>
+                                <div className={styles.botFormStack}>
                                     <NumberSetting
                                         label="Starting Chips" range="100-10000"
                                         value={config.startingChips} min={100} max={10000} step={100}
@@ -440,10 +438,9 @@ export function Lobby() {
                                 </div>
                             </div>
 
-                            <div className={styles.columnScrollContainer}>
-                                <div className={styles.columnGroup}>
-                                    <span className={styles.columnHeader}>Game Rules</span>
-
+                            <div className={styles.formStack}>
+                                <h2 className={styles.panelTitle}>Game Rules</h2>
+                                <div className={styles.botFormStack}>
                                     <NumberSetting
                                         label="Special Card Limit" range="0-10"
                                         value={config.specialCardLimit} min={0} max={10} step={1}
@@ -480,7 +477,7 @@ export function Lobby() {
                             </div>
                         </div>
 
-                        <div className={styles.formGroupRow} style={{ justifyContent: 'flex-start' }}>
+                        <div className={styles.formGroupRow} style={{ justifyContent: 'flex-start', marginTop: '0.5rem' }}>
                             <div style={{ width: '180px' }}>
                                 <button type="button" className={styles.btnWrapper} onClick={() => setView('lobby')}>
                                     <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>

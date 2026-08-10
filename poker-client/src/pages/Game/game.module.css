@@ -16,14 +16,21 @@
     --text-colour: #dcdcdc;
     --border-colour: #dcdcdc;
 
-    --card-width: 62px;
-    --card-height: 90px;
-    --card-gap: 0.5rem;
+    /* font scaling formula, split over 4 types of font */
+    --fs-sm: clamp(0.9rem, 1.05vw + 0.75vh, 1.3rem);
+    --fs-md: clamp(1.05rem,  1.2vw + 0.85vh, 1.5rem);
+    --fs-lg: clamp(1.2rem,  1.4vw + 1.05vh, 1.75rem);
+    --fs-xl: clamp(1.6rem, 1.65vw + 1.2vh, 2.25rem);
 
+    /* card scaling formula */
+    --card-width:       clamp(36px,  2vw + 1.6vh + 14px,  62px);
+    --card-height:      clamp(52px,  2.9vw + 2.4vh + 20px,  90px);
+    --card-gap:         clamp(4px,   0.4vw,        8px);
     --card-slot-border: 2px;
-    --card-slot-width: 66px;
-    --card-slot-height: 94px;
+    --card-slot-width:  calc(var(--card-width) + var(--card-slot-border) * 2);
+    --card-slot-height: calc(var(--card-height) + var(--card-slot-border) * 2);
 
+    --action-hud-height: calc(clamp(0.3rem, 0.55vh, 0.6rem) * 2 + var(--fs-md) * 1.4 + 8px);
     --stack-offset: 140px;
 
     --anim-betchip-add-ms: 100;
@@ -39,6 +46,7 @@
     color: var(--text-colour);
 }
 
+
 .gameContainer {
     box-sizing: border-box;
     position: relative;
@@ -48,8 +56,18 @@
     font-family: 'Jersey 10', sans-serif;
     display: flex;
     flex-direction: column;
+    justify-content: space-between;
     overflow: hidden;
-    padding: 1rem;
+    padding: clamp(0.4rem, 0.8vh, 0.9rem) clamp(0.6rem, 1.2vw, 1.2rem);
+
+    /* seat size scaling */
+    --seat-width: clamp(108px, 11vw + 40px, 200px);
+    --seat-padding: clamp(2px, 0.35vw + 1px, 4px);
+}
+
+.gameHeader {
+    width: 100%;
+    flex-shrink: 0;
 }
 
 .tableHeader {
@@ -57,65 +75,63 @@
     justify-content: space-between;
     align-items: center;
     border-bottom: 4px solid var(--light-box-colour);
-    padding-bottom: 0.5rem;
+    padding-bottom: clamp(0.2rem, 0.4vh, 0.6rem);
     color: var(--text-colour);
-    font-size: 1.75rem;
+    font-size: var(--fs-lg);
+    width: 100%;
+}
+
+.headerRoomCode {
+    font-size: var(--fs-md);
+    white-space: nowrap;
+    flex-shrink: 0;
 }
 
 .headerInfo {
     display: flex;
-    gap: 2rem;
+    gap: clamp(1rem, 1.5vw, 2.5rem);
     align-items: center;
 }
 
-.headerRoundBlock {
-    min-width: 190px;
-    width: 190px;
-    text-align: center;
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 0.35rem;
-    flex-shrink: 0;
-}
-
-.headerHandsBlock {
-    min-width: 190px;
-    width: 190px;
+.headerRoundBlock,
+.headerHandsBlock,
+.headerTimerBlock {
     text-align: left;
     display: inline-flex;
     align-items: center;
     justify-content: flex-start;
-    gap: 0.35rem;
-    font-variant-numeric: tabular-nums;
-    font-feature-settings: "tnum";
+    gap: 0.4rem;
+    font-size: var(--fs-md);
     flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .headerTimerBlock {
-    min-width: 190px;
-    width: 190px;
-    text-align: left;
-    display: inline-flex;
+    min-width: clamp(7rem, 7vw, 12rem);
+}
+
+.gameMainArea {
+    flex: 1;
+    display: flex;
     align-items: center;
-    justify-content: flex-start;
-    gap: 0.35rem;
-    font-variant-numeric: tabular-nums;
-    font-feature-settings: "tnum";
-    flex-shrink: 0;
+    justify-content: center;
+    position: relative;
+    width: 100%;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .pokerFelt {
     position: relative;
-    flex: 1;
-    margin: 1.5rem 2rem 0.5rem;
+    width: 84%;
+    height: 96%;
     background: #1b4332;
     border: 8px solid #2d1810;
     box-shadow: inset 0 0 0 4px var(--box-secondary-colour), 4px 4px 0px var(--box-shadow-colour);
     box-sizing: border-box;
-    align-self: center;
-    width: 80%;
-    min-width: 700px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .chipCanvas {
@@ -136,18 +152,32 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 1.5rem;
+    justify-content: center;
     z-index: 5;
 }
 
+.communityCardsWrapper {
+    position: relative;
+    width: calc(5 * var(--card-slot-width) + 4 * var(--card-gap));
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
 .potDisplay {
+    position: absolute;
+    bottom: calc(100% + 0.75rem);
+    left: 50%;
+    transform: translateX(-50%);
     background: var(--box-secondary-colour);
     border: 2px solid var(--light-box-colour);
-    padding: 1rem 1rem;
-    font-size: 2rem;
-    min-width: 110px;
+    padding: 0.5rem 0.75rem;
+    font-size: var(--fs-lg);
+    min-width: 80px;
     color: var(--input-focus-colour);
     text-shadow: 2px 2px 0px var(--box-shadow-colour);
+    white-space: nowrap;
+    text-align: center;
 }
 
 .communityCards {
@@ -238,15 +268,19 @@
 }
 
 .cardFront span {
-    font-size: 2rem;
+    /* rank font scales with card height separate to other font tiers */
+    font-size: calc(var(--card-height) * 0.32);
     font-weight: bold;
     line-height: 1;
 }
 
 .cardFront img {
-    width: 32px;
-    height: 32px;
-    image-rendering: crisp-edges;
+    width: calc(var(--card-width) * 0.48);
+    height: calc(var(--card-width) * 0.48);
+    max-width: 90%;
+    max-height: 90%;
+    object-fit: contain;
+    image-rendering: pixelated;
 }
 
 .playingBackFace {
@@ -293,55 +327,85 @@
 
 .seatInner {
     position: relative;
-    padding: 6px 8px;
+    padding: var(--seat-padding);
     display: flex;
     flex-direction: column;
     align-items: center;
-    width: 156px;
-    gap: 2px;
+    width: var(--seat-width);
+    gap: 1px;
     overflow: visible;
+    box-sizing: border-box;
 }
 
 .seatName {
-    font-size: 1.5rem;
+    font-size: var(--fs-md);
     color: var(--text-colour);
     font-family: 'Jersey 10', cursive;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    max-width: 140px;
+    max-width: calc(var(--seat-width) - 8px);
     text-align: center;
+    line-height: 1.1;
+    margin: 0;
 }
 
 .handPlaceholder,
 .handTypeTag {
-    font-size: 1.5rem;
+    font-size: var(--fs-sm);
     font-family: 'Jersey 10', sans-serif;
     color: var(--input-focus-colour);
     line-height: 1;
-    height: 1.5rem;
-    min-height: 1.5rem;
+    height: var(--fs-sm);
+    min-height: var(--fs-sm);
     display: flex;
     align-items: center;
     justify-content: center;
     margin: 0;
     padding: 0;
+    white-space: nowrap;
 }
 
 .seatChips,
 .seatBet {
-    font-size: 1.5rem;
+    font-size: var(--fs-sm);
     font-family: 'Jersey 10', sans-serif;
     color: var(--input-focus-colour);
     line-height: 1;
     margin: 0;
     padding: 0;
+    white-space: nowrap;
+}
+
+.seatSpecialCards {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
+    margin: 0;
+    padding: 0;
+    white-space: nowrap;
+    line-height: 1;
+}
+
+.specialCardCount,
+.specialCardCount *,
+.specialLabel {
+    font-size: var(--fs-sm) !important;
+    font-family: 'Jersey 10', sans-serif !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+    margin: 0;
+}
+
+.specialLabel {
+    color: var(--special-colour) !important;
 }
 
 .dealerBadgeWrapper {
     position: absolute;
-    top: -14px;
-    right: -14px;
+    top: -10px;
+    right: -10px;
     z-index: 12;
     pointer-events: none;
 }
@@ -350,9 +414,9 @@
     background: var(--box-secondary-colour);
     color: var(--input-focus-colour);
     font-family: 'Jersey 10', sans-serif;
-    font-size: 1.5rem;
+    font-size: var(--fs-sm);
     font-weight: bold;
-    padding: 0 6px;
+    padding: 0 5px;
     line-height: 1;
     display: flex;
     align-items: center;
@@ -372,9 +436,9 @@
     background: #1a1a24;
     color: var(--input-focus-colour);
     font-family: 'Jersey 10', sans-serif;
-    font-size: 1.4rem;
+    font-size: var(--fs-sm);
     font-weight: bold;
-    padding: 0 6px;
+    padding: 1px 4px;
     line-height: 1;
     display: flex;
     align-items: center;
@@ -387,7 +451,7 @@
 }
 
 .waitingNotice {
-    font-size: 1.5rem;
+    font-size: var(--fs-md);
     color: var(--input-focus-colour);
     text-shadow: 2px 2px 0px var(--box-shadow-colour);
 }
@@ -419,8 +483,8 @@
 
 .deckStack {
     position: absolute;
-    top: -10%;
-    transform: translateX(calc(-1 * (var(--stack-offset))));
+    bottom: calc(100% + 0.75rem);
+    left: 0;
     width: var(--card-width);
     height: var(--card-height);
     z-index: 5;
@@ -437,8 +501,8 @@
 
 .specialDeckStack {
     position: absolute;
-    top: -10%;
-    transform: translateX(var(--stack-offset));
+    bottom: calc(100% + 0.75rem);
+    right: 0;
     width: var(--card-width);
     height: var(--card-height);
     z-index: 5;
@@ -463,9 +527,12 @@
 }
 
 .specialBackFace img {
-    image-rendering: crisp-edges;
-    width: 36px;
-    height: 36px;
+    image-rendering: pixelated;
+    width: calc(var(--card-width) * 0.52);
+    height: calc(var(--card-width) * 0.52);
+    max-width: 88%;
+    max-height: 88%;
+    object-fit: contain;
 }
 
 .specialCardBar {
@@ -483,7 +550,7 @@
 }
 
 .specialCardBarInner {
-    padding: 6px 8px;
+    padding: clamp(4px, 0.3vh, 6px) clamp(5px, 0.4vw, 8px);
     display: flex;
     align-items: center;
     justify-content: flex-start;
@@ -693,22 +760,8 @@
 }
 
 .specialCardCount {
-    font-size: 1.5rem;
+    font-size: var(--fs-sm);
     font-family: 'Jersey 10', sans-serif;
-}
-
-.actionHud {
-    height: 60px;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    overflow: visible;
-}
-
-.turnBar {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
 }
 
 .btnWrapper {
@@ -742,12 +795,13 @@
 
 .btnInner {
     background: var(--button-colour);
-    padding: 0.5rem 1rem;
-    font-size: 1.5rem;
+    padding: clamp(0.25rem, 0.45vh, 0.6rem) clamp(0.5rem, 0.85vw, 1.25rem);
+    font-size: var(--fs-md);
     font-family: 'Jersey 10', sans-serif;
     text-align: center;
     box-sizing: border-box;
     color: var(--text-colour);
+    white-space: nowrap;
 }
 
 .btnPrimary {
@@ -776,17 +830,17 @@
     box-sizing: border-box;
     background: transparent;
     font-family: 'Jersey 10', sans-serif;
-    font-size: 1.5rem;
+    font-size: var(--fs-md);
     border: none;
     outline: none;
     width: 100%;
-    padding: 2px;
+    padding: clamp(0px, 0.5vw - 1px, 2px);
     color: var(--text-colour);
     text-align: center;
 }
 
 .inputOuter {
-    width: 120px;
+    width: clamp(80px, 9vw + 40px, 160px);
     filter: drop-shadow(2px 2px 0px var(--box-shadow-colour));
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
@@ -796,19 +850,20 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.25rem 0.5rem;
+    padding: clamp(0.25rem, 0.45vh, 0.6rem) clamp(0.5rem, 0.85vw, 1.25rem);
     background: var(--box-colour);
 }
 
 .capacityBtn {
     color: var(--input-focus-colour);
-    font-size: 1.5rem;
+    font-size: var(--fs-md);
     font-family: 'Jersey 10', cursive;
-    padding: 0 8px;
+    padding: 0 clamp(1px, 0.2rem - 1px, 4px);
     cursor: pointer;
     user-select: none;
     background: transparent;
     border: none;
+    line-height: 1;
 }
 
 .capacityBtn:hover {
@@ -817,13 +872,13 @@
 
 .joker>span {
     font-family: 'Jersey 10', sans-serif;
-    font-size: 1.5rem;
+    font-size: var(--fs-sm);
 }
 
 .joker>img {
-    width: 16px !important;
-    height: 16px !important;
-    image-rendering: crisp-edges;
+    width: calc(var(--card-width) * 0.24) !important;
+    height: calc(var(--card-width) * 0.24) !important;
+    image-rendering: pixelated;
 }
 
 @keyframes cardDealInPlace {
@@ -906,15 +961,20 @@
 
 .specialMark {
     position: absolute;
-    width: 14px !important;
-    height: 14px !important;
+    width: calc(var(--card-width) * 0.22) !important;
+    height: calc(var(--card-width) * 0.22) !important;
     justify-self: center;
+    image-rendering: pixelated;
 }
 
 .specialImage {
-    height: 60px !important;
-    width: 60px !important;
+    width: calc(var(--card-width) * 0.82) !important;
+    height: calc(var(--card-width) * 0.82) !important;
+    max-width: 88%;
+    max-height: 88%;
+    object-fit: contain;
     justify-self: center;
+    image-rendering: pixelated;
 }
 
 .targetableCard {
@@ -950,7 +1010,6 @@
     filter: drop-shadow(4px 4px 0px var(--input-focus-colour)) !important;
 }
 
-/* Active Modifiers Stack on Right Side */
 .activeModifiersContainer {
     position: absolute;
     right: 1.5rem;
@@ -1130,4 +1189,104 @@
     font-size: 1.2rem;
     color: #ffd700;
     line-height: 1.15;
+}
+
+.gameFooter {
+    width: 100%;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    position: relative;
+    /* footer size scaling */
+    padding-top: clamp(0.1rem, 0.25vh, 0.3rem);
+    gap: clamp(0.1rem, 0.2vh, 0.25rem);
+    min-height: 0;
+}
+
+.actionHud {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    z-index: 100;
+    overflow: visible;
+    min-height: var(--action-hud-height)
+}
+
+.turnBar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    /* turn bar gap scaling */
+    gap: clamp(0.35rem, 0.6vw, 0.9rem);
+    flex-wrap: nowrap !important;
+    min-width: 0;
+    overflow: visible;
+}
+
+.turnBar .btnWrapper {
+    flex-shrink: 0;
+}
+
+.leaveGameBtn {
+    position: absolute;
+    right: 0;
+    min-height: var(--action-hud-height);
+    flex-shrink: 0;
+    z-index: 105;
+}
+
+@keyframes pulse {
+    0% {
+        transform: scale(0.2);
+    }
+    100% {
+        transform: scale(4);
+    }
+}
+
+.timeOverlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 100;
+    pointer-events: none;
+    text-align: center;
+    user-select: none;
+}
+
+.timeText {
+    font-size: 5rem;
+    font-family: 'Jersey 15', 'Jersey 10', sans-serif;
+    font-weight: bold;
+    color: #b90000;
+    animation: pulse 1s cubic-bezier(1, -0.06, 0.33, 0.99) infinite;
+}
+
+@media (max-width: 768px) {
+    .tableHeader {
+        gap: 0.5rem;
+        padding-bottom: 0;
+    }
+
+    .headerInfo {
+        gap: clamp(0.4rem, 1vw, 0.75rem);
+    }
+
+    .headerRoundBlock,
+    .headerHandsBlock,
+    .headerTimerBlock, 
+    .headerRoomCode {
+        font-size: var(--fs-sm);
+    }
+}
+
+@media (max-width: 440px) {
+    .actionHud {
+        justify-content: left;
+    }
 }

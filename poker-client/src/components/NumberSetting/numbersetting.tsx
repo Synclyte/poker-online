@@ -67,7 +67,7 @@ export const NumberSetting = ({
     }, []);
 
     return (
-        <div className={styles.formGroup} style={{ flex: 1 }}>
+        <div className={styles.formGroup} style={{ width: '100%' }}>
             {label !== '' &&
                 <label>
                     {label} {range !== '' && <span style={{ fontFamily: '"Minecraft", "Pixeloid Sans", sans-serif', fontSize: '0.6em', opacity: 0.8 }}>({range})</span>}

@@ -120,6 +120,9 @@ export function Game() {
     const holeSlotRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const specialSlotRefs = useRef<Record<number, HTMLDivElement | null>>({});
 
+    const lastCountdownSecondRef = useRef<number | null>(null);
+    const leaveGameText = useRef<String>("Leave Game");
+
     const selectedSpecialCard = selectedSpecialCardIndex === null ? null
         : meInGame?.specialCards[selectedSpecialCardIndex] ?? null;
 
@@ -196,6 +199,14 @@ export function Game() {
     useEffect(() => {
         document.title = "Poker? - In Game";
     }, []);
+
+    useEffect(() => {
+        if (screen.width >= 600) {
+            leaveGameText.current = "Leave Game";
+        } else {
+            leaveGameText.current = "Quit";
+        }
+    }, [screen.width]);
 
     // chip flying animation handler 
     useEffect(() => {
@@ -740,9 +751,7 @@ export function Game() {
                     }
                 };
 
-                /**
-                 * Animation target resolution fallback
-                 */
+                // animation target resolution fallback
                 const resolveTargetElement = async (refKey: string, selectorFallback?: string): Promise<HTMLDivElement | null> => {
                     let el: HTMLDivElement | null = cardInnerRefs.current[refKey] ?? null;
                     if (!el && selectorFallback) {
@@ -755,9 +764,7 @@ export function Game() {
                     return el;
                 };
 
-                /**
-                 * Card deal animation helper
-                 */
+                // card deal animation helper
                 const executeCardDealAnimation = async ({
                     activeCards,
                     cardIndex,
@@ -1402,6 +1409,19 @@ export function Game() {
     const [displayedModifiers, setDisplayedModifiers] = useState<(ActiveModifierInfo & { isRemoving?: boolean })[]>([]);
 
     useEffect(() => {
+        if (!isMyTurn || turnTimeRemaining === null || turnTimeRemaining > 5 || turnTimeRemaining <= 0) {
+            lastCountdownSecondRef.current = null;
+            return;
+        }
+
+        if (lastCountdownSecondRef.current !== turnTimeRemaining) {
+            lastCountdownSecondRef.current = turnTimeRemaining;
+            soundManager.playCountdownTick(6 - turnTimeRemaining);
+        }
+    }, [turnTimeRemaining, isMyTurn]);
+    const showTurnTimerOverlay = isMyTurn && turnTimeRemaining !== null && turnTimeRemaining <= 5 && turnTimeRemaining > 0;
+
+    useEffect(() => {
         setDisplayedModifiers(prev => {
             const nextIds = new Set(activeModifiers.map(m => m.id));
             const hasRemovals = prev.some(p => !p.isRemoving && !nextIds.has(p.id));
@@ -1505,23 +1525,34 @@ export function Game() {
                 backToRoom={() => navigate(`/lobby/${roomId}`)}
             />
 
-            <GameHeader
-                roomId={roomId}
-                gameState={gameState}
-                config={config}
-                turnTimeRemaining={turnTimeRemaining}
-                boxBorderColour={boxBorderColour}
-                leaveGame={leaveGame}
-            />
+            <header className={styles.gameHeader}>
+                <GameHeader
+                    roomId={roomId}
+                    gameState={gameState}
+                    config={config}
+                    turnTimeRemaining={turnTimeRemaining}
+                />
+            </header>
 
             <ActiveModifiers displayedModifiers={displayedModifiers} />
 
-            <div className={styles.pokerFelt}>
-                <canvas ref={canvasRef} className={styles.chipCanvas} />
+            <main className={styles.gameMainArea}>
+                <Chat position="top-left" roomId={roomId} myId={myId} />
+                <div className={styles.pokerFelt}>
+                    <canvas ref={canvasRef} className={styles.chipCanvas} />
 
-                {gameState?.roundName !== "room" && (
-                    <div className={styles.centerBoard}>
-                        <div className={styles.deckStack} ref={deckRef}>
+                    {showTurnTimerOverlay && (
+                        <div className={styles.timeOverlay}>
+                            <div className={styles.timeText}>
+                                {turnTimeRemaining}
+                            </div>
+                        </div>
+                    )}
+
+                    {gameState?.roundName !== "room" && (
+                        <div className={styles.centerBoard}>
+                            <div className={styles.communityCardsWrapper}>
+                                <div className={styles.deckStack} ref={deckRef}>
                             {(() => {
                                 const hiddenCard: CardView = { visibility: "hidden" };
                                 const remainingCards = gameState?.deckCards ?? 52;
@@ -1595,14 +1626,21 @@ export function Game() {
                                 );
                             }}
                         />
-                    </div>
-                )}
+                            </div>
+                        </div>
+                    )}
 
                 {gameState?.players.map((p, seatIndex) => {
                     const totalSeats = gameState.players.length;
-                    const angle = (seatIndex / totalSeats) * 2 * Math.PI + Math.PI / 2;
-                    const rx = 37;
-                    const ry = 33;
+                    const baseAngle = (seatIndex / totalSeats) * 2 * Math.PI + Math.PI / 2;
+                    const rx = 47;
+                    const ry = 36.5;
+
+                    // deformation coefficient
+                    const k = (rx - ry) / (rx + ry);
+                    // correction estimation
+                    const angle = baseAngle + k * Math.sin(2 * baseAngle);
+
                     const left = 50 + rx * Math.cos(angle);
                     const top = 50 + ry * Math.sin(angle);
 
@@ -1720,197 +1758,205 @@ export function Game() {
                     );
                 })}
             </div>
+            </main>
 
-            {gameState?.roundName !== "room" && meInGame && (config?.specialCardLimit ?? 0) > 0 && (
-                <div className={styles.specialCardBar}>
-                    {(() => {
-                        const limit = config?.specialCardLimit ?? 0;
+            <footer className={styles.gameFooter}>
+                {gameState?.roundName !== "room" && meInGame && (config?.specialCardLimit ?? 0) > 0 && (
+                    <div className={styles.specialCardBar}>
+                        {(() => {
+                            const limit = config?.specialCardLimit ?? 0;
 
-                        return (
-                            <PixelBox
-                                borderColour="transparent"
-                                backgroundColour="rgba(26, 26, 36, 0.75)"
-                                className={styles.specialPixelBoxBar}
-                                innerClassName={styles.specialCardBarInner}
-                                unclipped
-                            >
-                                <CardSlotBar
-                                    cards={meInGame.specialCards}
-                                    initialSlotLimit={limit}
-                                    containerClassName={styles.specialCardHand}
-                                    containerStyle={{
-                                        width: `calc(${limit} * var(--card-slot-width) + (${limit} - 1) * var(--card-gap))`
-                                    }}
-                                    renderCard={(card, index) => {
-                                        const isSelected = selectedSpecialCardIndex === index;
+                            return (
+                                <PixelBox
+                                    borderColour="transparent"
+                                    backgroundColour="rgba(26, 26, 36, 0.75)"
+                                    className={styles.specialPixelBoxBar}
+                                    innerClassName={styles.specialCardBarInner}
+                                    unclipped
+                                >
+                                    <CardSlotBar
+                                        cards={meInGame.specialCards}
+                                        initialSlotLimit={limit}
+                                        containerClassName={styles.specialCardHand}
+                                        containerStyle={{
+                                            width: `calc(${limit} * var(--card-slot-width) + (${limit} - 1) * var(--card-gap))`
+                                        }}
+                                        renderCard={(card, index) => {
+                                            const isSelected = selectedSpecialCardIndex === index;
 
-                                        return (
-                                            <div
-                                                key={`special-slot-wrapper-${index}`}
-                                                className={styles.specialSlotWrapper}
-                                                onMouseEnter={() => card ? setHoveredSpecialIndex(index) : undefined}
-                                                onMouseLeave={() => setHoveredSpecialIndex(null)}
-                                            >
-                                                {card && (card as any).visibility === "visible" && (card as any).value && (isSelected || hoveredSpecialIndex === index) && (() => {
-                                                    const cardInfo = getSpecialCardInfo(
-                                                        (card as any).value,
-                                                        config?.blindSize,
-                                                        gameState?.modifierVars?.anteMult,
-                                                        gameState?.modifierVars?.gambleSuccessChance
-                                                    );
-                                                    return (
-                                                        <div
-                                                            className={[
-                                                                styles.specialSelectionText,
-                                                                isSelected ? styles.active : styles.hovered,
-                                                            ].join(" ")}
-                                                        >
-                                                            <strong>{cardInfo.label}</strong>
-                                                            <span className={styles.specialSelectionDesc}>{cardInfo.description}</span>
-
-                                                            {isSelected && (
-                                                                <>
-                                                                    {cardInfo.target === "other" &&
-                                                                        selectedSpecialTarget === null && <span className={styles.specialSelectionInstruction}>Select an opponent</span>}
-
-                                                                    {cardInfo.target === "selfCard" &&
-                                                                        cardInfo.requiresTargetIndex &&
-                                                                        selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select one of your own hole cards</span>}
-
-                                                                    {cardInfo.target === "otherCard" &&
-                                                                        cardInfo.requiresTargetIndex &&
-                                                                        selectedSpecialTarget !== null &&
-                                                                        selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select an opponent hole card</span>}
-
-                                                                    {cardInfo.target === "communityCard" &&
-                                                                        cardInfo.requiresTargetIndex &&
-                                                                        selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select a community card</span>}
-                                                                </>
-                                                            )}
-                                                        </div>
-                                                    );
-                                                })()}
-
-                                                <SpecialCard
-                                                    key={`special-slot-${index}`}
-                                                    slotAttribute={`special-${index}`}
-                                                    card={card}
-                                                    slotRef={element => {
-                                                        specialSlotRefs.current[index] = element;
-                                                    }}
-                                                    innerRef={element => {
-                                                        cardInnerRefs.current[`special-${index}`] = element;
-                                                    }}
-                                                    selected={isSelected}
-                                                    onClick={(card && isMyTurn && !meInGame.acted) ? () => {
-                                                        setSelectedSpecialCardIndex(
-                                                            selectedSpecialCardIndex === index ? null : index,
+                                            return (
+                                                <div
+                                                    key={`special-slot-wrapper-${index}`}
+                                                    className={styles.specialSlotWrapper}
+                                                    onMouseEnter={() => card ? setHoveredSpecialIndex(index) : undefined}
+                                                    onMouseLeave={() => setHoveredSpecialIndex(null)}
+                                                >
+                                                    {card && (card as any).visibility === "visible" && (card as any).value && (isSelected || hoveredSpecialIndex === index) && (() => {
+                                                        const cardInfo = getSpecialCardInfo(
+                                                            (card as any).value,
+                                                            config?.blindSize,
+                                                            gameState?.modifierVars?.anteMult,
+                                                            gameState?.modifierVars?.gambleSuccessChance
                                                         );
-                                                        setSelectedSpecialTarget(null);
-                                                        setSelectedTargetCardIndex(null);
-                                                    } : undefined}
-                                                />
-                                            </div>
-                                        );
-                                    }}
-                                />
-                            </PixelBox>
-                        );
-                    })()}
-                </div>
-            )}
+                                                        return (
+                                                            <div
+                                                                className={[
+                                                                    styles.specialSelectionText,
+                                                                    isSelected ? styles.active : styles.hovered,
+                                                                ].join(" ")}
+                                                            >
+                                                                <strong>{cardInfo.label}</strong>
+                                                                <span className={styles.specialSelectionDesc}>{cardInfo.description}</span>
 
-            <div className={styles.actionHud}>
-                {isMyTurn && gameState?.roundName !== "room" && (
-                    <>
+                                                                {isSelected && (
+                                                                    <>
+                                                                        {cardInfo.target === "other" &&
+                                                                            selectedSpecialTarget === null && <span className={styles.specialSelectionInstruction}>Select an opponent</span>}
 
-                        {selectedSpecialCardValue ? (
-                            <div className={styles.turnBar}>
+                                                                        {cardInfo.target === "selfCard" &&
+                                                                            cardInfo.requiresTargetIndex &&
+                                                                            selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select one of your own hole cards</span>}
 
-                                <button type="button" className={styles.btnWrapper} disabled={isAnimating} onClick={playSelectedSpecialCard}>
-                                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                        Play
-                                    </PixelBox>
-                                </button>
+                                                                        {cardInfo.target === "otherCard" &&
+                                                                            cardInfo.requiresTargetIndex &&
+                                                                            selectedSpecialTarget !== null &&
+                                                                            selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select an opponent hole card</span>}
 
-                                <button type="button" className={styles.btnWrapper} disabled={isAnimating} onClick={cancelSelectedSpecialCard}>
-                                    <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
-                                        Cancel
-                                    </PixelBox>
-                                </button>
+                                                                        {cardInfo.target === "communityCard" &&
+                                                                            cardInfo.requiresTargetIndex &&
+                                                                            selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select a community card</span>}
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })()}
 
-                                <button type="button" className={styles.btnWrapper} disabled={isAnimating} onClick={discardSelectedSpecialCard}>
-                                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
-                                        Discard
-                                    </PixelBox>
-                                </button>
-                            </div>
-                        ) : (
-                            <div className={styles.turnBar}>
-                                <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", "call")}>
-                                    <PixelBox innerClassName={`${styles.btnInner} ${currentBetToCall > 0 ? styles.btnPrimary : ''}`} borderColour={boxBorderColour}>
-                                        {currentBetToCall <= 0 ? "Check" : `Call (${currentBetToCall})`}
-                                    </PixelBox>
-                                </button>
-
-                                <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", `raise ${raiseAmount}`)}>
-                                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                        Raise
-                                    </PixelBox>
-                                </button>
-
-                                <NumberSetting
-                                    disabled={meInGame.acted}
-                                    label=''
-                                    range=''
-                                    min={effectiveMinRaise}
-                                    max={meInGame?.chips ?? 1000}
-                                    step={effectiveMinRaise}
-                                    value={raiseAmount}
-                                    onChange={(e) => {
-                                        if (e === "") {
-                                            setRaiseAmount(0);
-                                        } else {
-                                            setRaiseAmount(typeof e === 'number' ? e : parseInt(e) || 0);
-                                        }
-                                    }}
-                                    styles={styles}
-                                    boxBorderColour={boxBorderColour}
-                                />
-
-                                <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", "fold")}>
-                                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
-                                        Fold
-                                    </PixelBox>
-                                </button>
-                            </div>
-                        )}
-                    </>
-                )}
-
-                {gameState?.roundName === "room" && (
-                    <button type="button" className={styles.btnWrapper} onClick={() => navigate(`/lobby/${roomId}`)}>
-                        <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                            Return to Lobby
-                        </PixelBox>
-                    </button>
-                )}
-
-                {(gameState?.roundName === "showdown" || gameState?.roundName === "preround") && (
-                    <>
-                        {isHost ? (
-                            <button type="button" className={styles.btnWrapper} onClick={startNextRound}>
-                                <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                    Start Next Hand
+                                                    <SpecialCard
+                                                        key={`special-slot-${index}`}
+                                                        slotAttribute={`special-${index}`}
+                                                        card={card}
+                                                        slotRef={element => {
+                                                            specialSlotRefs.current[index] = element;
+                                                        }}
+                                                        innerRef={element => {
+                                                            cardInnerRefs.current[`special-${index}`] = element;
+                                                        }}
+                                                        selected={isSelected}
+                                                        onClick={(card && isMyTurn && !meInGame.acted) ? () => {
+                                                            setSelectedSpecialCardIndex(
+                                                                selectedSpecialCardIndex === index ? null : index,
+                                                            );
+                                                            setSelectedSpecialTarget(null);
+                                                            setSelectedTargetCardIndex(null);
+                                                        } : undefined}
+                                                    />
+                                                </div>
+                                            );
+                                        }}
+                                    />
                                 </PixelBox>
-                            </button>
-                        ) : (
-                            <div className={styles.waitingNotice}>Waiting for Host to start next hand...</div>
-                        )}
-                    </>
+                            );
+                        })()}
+                    </div>
                 )}
-            </div>
-            <Chat position="top-left" roomId={roomId} myId={myId} />
+
+                <div className={styles.actionHud}>
+                    {isMyTurn && gameState?.roundName !== "room" && (
+                        <>
+
+                            {selectedSpecialCardValue ? (
+                                <div className={styles.turnBar}>
+
+                                    <button type="button" className={styles.btnWrapper} disabled={isAnimating} onClick={playSelectedSpecialCard}>
+                                        <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
+                                            Play
+                                        </PixelBox>
+                                    </button>
+
+                                    <button type="button" className={styles.btnWrapper} disabled={isAnimating} onClick={cancelSelectedSpecialCard}>
+                                        <PixelBox innerClassName={styles.btnInner} borderColour={boxBorderColour}>
+                                            Cancel
+                                        </PixelBox>
+                                    </button>
+
+                                    <button type="button" className={styles.btnWrapper} disabled={isAnimating} onClick={discardSelectedSpecialCard}>
+                                        <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
+                                            Discard
+                                        </PixelBox>
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className={styles.turnBar}>
+                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", "call")}>
+                                        <PixelBox innerClassName={`${styles.btnInner} ${currentBetToCall > 0 ? styles.btnPrimary : ''}`} borderColour={boxBorderColour}>
+                                            {currentBetToCall <= 0 ? "Check" : `Call (${currentBetToCall})`}
+                                        </PixelBox>
+                                    </button>
+
+                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", `raise ${raiseAmount}`)}>
+                                        <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
+                                            Raise
+                                        </PixelBox>
+                                    </button>
+
+                                    <NumberSetting
+                                        disabled={meInGame.acted}
+                                        label=''
+                                        range=''
+                                        min={effectiveMinRaise}
+                                        max={meInGame?.chips ?? 1000}
+                                        step={effectiveMinRaise}
+                                        value={raiseAmount}
+                                        onChange={(e) => {
+                                            if (e === "") {
+                                                setRaiseAmount(0);
+                                            } else {
+                                                setRaiseAmount(typeof e === 'number' ? e : parseInt(e) || 0);
+                                            }
+                                        }}
+                                        styles={styles}
+                                        boxBorderColour={boxBorderColour}
+                                    />
+
+                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", "fold")}>
+                                        <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
+                                            Fold
+                                        </PixelBox>
+                                    </button>
+                                </div>
+                            )}
+                        </>
+                    )}
+
+                    {gameState?.roundName === "room" && (
+                        <button type="button" className={styles.btnWrapper} onClick={() => navigate(`/lobby/${roomId}`)}>
+                            <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
+                                Return to Lobby
+                            </PixelBox>
+                        </button>
+                    )}
+
+                    {(gameState?.roundName === "showdown" || gameState?.roundName === "preround") && (
+                        <>
+                            {isHost ? (
+                                <button type="button" className={styles.btnWrapper} onClick={startNextRound}>
+                                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
+                                        Start Next Hand
+                                    </PixelBox>
+                                </button>
+                            ) : (
+                                <div className={styles.waitingNotice}>Waiting for Host to start next hand...</div>
+                            )}
+                        </>
+                    )}
+                </div>
+
+                <button type="button" className={`${styles.btnWrapper} ${styles.leaveGameBtn}`} onClick={leaveGame}>
+                    <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
+                        {leaveGameText.current}
+                    </PixelBox>
+                </button>
+            </footer>
         </div>
     );
 }

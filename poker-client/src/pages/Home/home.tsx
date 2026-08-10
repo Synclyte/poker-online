@@ -189,12 +189,6 @@ export function Home() {
     return (
         <>
             <div className={styles.container}>
-                {/*
-            <div className={styles.canvasPlaceholder}>
-
-            </div>
-            */}
-
                 <div className={styles.uiWrapperOuter}>
                     <PixelBox
                         innerClassName={styles.uiWrapperInner}
@@ -407,7 +401,7 @@ export function Home() {
             </div>
 
             <div className={styles.version}>
-                Version 2
+                Version 3
             </div>
         </>
     );

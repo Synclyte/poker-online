@@ -51,26 +51,61 @@
     position: relative;
     z-index: 10;
     width: 100%;
-    max-width: 420px;
+    max-width: 440px;
     filter: drop-shadow(4px 4px 0px var(--box-shadow-colour));
     -webkit-transform: translateZ(0);
     transform: translateZ(0);
 }
 
 .uiWrapperInner {
-    padding: 3rem;
+    padding: 2.5rem;
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 1.25rem;
 }
 
 .title {
     font-family: 'Jersey 15', sans-serif;
     text-align: center;
-    margin: 0 0 1rem 0;
+    margin: 0 0 0.5rem 0;
     font-size: 4rem;
     text-shadow: 2px 2px 0px var(--box-shadow-colour);
     color: var(--input-focus-colour);
+}
+
+@media (max-width: 600px), (max-height: 700px) {
+    .uiWrapperOuter {
+        max-width: 360px;
+        margin: 1rem;
+    }
+
+    .uiWrapperInner {
+        padding: 1.5rem;
+        gap: 1rem;
+    }
+
+    .title {
+        font-size: 3rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .btnInner {
+        padding: 0.5rem !important;
+        font-size: 1.5rem !important;
+    }
+
+    .capacityInner {
+        padding: 0.25rem 0.35rem;
+    }
+
+    .capacityBtn {
+        font-size: 1.4rem;
+        padding: 0 0.35rem;
+    }
+
+    .capacityValue {
+        font-size: 1.25rem;
+    }
 }
 
 .menuStack {
@@ -111,8 +146,8 @@
 
 .btnInner {
     background: var(--button-colour);
-    padding: 1rem;
-    font-size: 1.8rem;
+    padding: 0.75rem;
+    font-size: 1.75rem;
     font-family: 'Jersey 10', sans-serif;
     text-align: center;
     width: 100%;
@@ -194,18 +229,26 @@ select.formControl option {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.25rem 0.75rem;
+    padding: 0.35rem 0.5rem;
+    box-sizing: border-box;
 }
 
 .capacityBtn {
     color: var(--input-focus-colour);
-    font-size: 2.5rem;
-    padding: 0 1rem;
+    font-size: 1.8rem;
+    line-height: 1;
+    padding: 0 0.5rem;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
 }
 
 .capacityValue {
-    font-size: 1.8rem;
+    font-size: 1.5rem;
     font-family: 'Jersey 10', sans-serif;
+    text-align: center;
 }
 
 .roomListOuter {

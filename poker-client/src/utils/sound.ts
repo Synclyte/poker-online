@@ -8,6 +8,7 @@ import dissolveSfx from '../assets/sfx/dissolve.mp3';
 import toastSuccessSfx from '../assets/sfx/toast_success.mp3';
 import toastErrorSfx from '../assets/sfx/toast_warning.mp3';
 import callSfx from '../assets/sfx/call.mp3';
+import countdownSfx from '../assets/sfx/countdown.mp3';
 
 export type SoundEffect =
     | "button_click"
@@ -19,7 +20,8 @@ export type SoundEffect =
     | "toast"
     | "toast_success"
     | "toast_error"
-    | "call";
+    | "call"
+    | "countdown";
 
 class SoundManager {
     private audioContext: AudioContext | null = null;
@@ -38,6 +40,7 @@ class SoundManager {
         ["toast_error", 0.5],
         ["call", 0.8],
         ["chips", 4.0],
+        ["countdown", 0.4],
     ]);
     private toggleDrawState: boolean = false;
     private isMuted: boolean = false;
@@ -55,6 +58,7 @@ class SoundManager {
         this.audioSources.set("toast_success", toastSuccessSfx);
         this.audioSources.set("toast_error", toastErrorSfx);
         this.audioSources.set("call", callSfx);
+        this.audioSources.set("countdown", countdownSfx);
 
         if (typeof window !== "undefined" && window.localStorage) {
             const savedVol = localStorage.getItem("globalVolume");
@@ -261,6 +265,23 @@ class SoundManager {
                 audio.volume = vol;
             }
         }
+    }
+
+    public playCountdownTick(step: number) {
+        if (this.isMuted || this.volume <= 0) return;
+
+        const src = this.audioSources.get("countdown");
+        if (!src) return;
+
+        try {
+            const audio = new Audio(src);
+            const multiplier = this.soundVolumeMultipliers.get("countdown") ?? 0.5;
+
+            audio.volume = Math.min(1, Math.max(0, this.volume * multiplier));
+            // TODO: pitch up subsequent steps
+
+            setTimeout(() => audio.play().catch(() => {}), 500);
+        } catch {}
     }
 }
 
