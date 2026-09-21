@@ -401,7 +401,7 @@ export function Home() {
             </div>
 
             <div className={styles.version}>
-                Version 3
+                Version 4
             </div>
         </>
     );

@@ -308,6 +308,7 @@ struct GameContext {
     deck_type: DeckType,
     max_players: usize,
     round_limit: i32,
+    max_bet_multiplier: Option<u32>,
     id: usize,
 }
 impl GameContext {
@@ -322,6 +323,7 @@ impl GameContext {
         deck_type: DeckType, 
         max_players: usize,
         round_limit: i32,
+        max_bet_multiplier: Option<u32>,
     ) -> Self {
         permitted_hands.sort_by(|a, b| b.cmp(a));
         let hand_fns: Vec<(HandType, fn(&Vec<ExpandedCard>, usize) -> Option<Hand>)> = permitted_hands
@@ -339,6 +341,7 @@ impl GameContext {
             deck_type, 
             max_players, 
             round_limit,
+            max_bet_multiplier,
             id: 0 
         }
     }
@@ -363,6 +366,8 @@ pub(crate) struct GameConfig {
     pub deck_type: DeckType,
     pub max_players: usize,
     pub round_limit: i32,
+    #[serde(default)]
+    pub max_bet_multiplier: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -426,7 +431,8 @@ impl Game {
             0, 
             DeckType::Standard, 
             4, 
-            30
+            30,
+            Some(25),
         );
         let deck = DeckType::Standard.get_associated_deck();
 
@@ -467,11 +473,12 @@ impl Game {
             HAND_TYPES.to_vec(), 
             config.blind_size, 
             config.min_raise, 
-            config.starting_chips,
-            config.special_card_limit,
+            config.starting_chips, 
+            config.special_card_limit, 
             config.deck_type, 
-            config.max_players,
+            config.max_players, 
             config.round_limit,
+            config.max_bet_multiplier,
         );
         let deck = config.deck_type.get_associated_deck();
 
@@ -498,6 +505,27 @@ impl Game {
         self.players = players;
 
         Ok(())
+    }
+
+    pub(crate) fn get_current_max_bet(&self) -> Option<i32> {
+        let mult = self.ctx.max_bet_multiplier?;
+        if mult == 0 {
+            return None;
+        }
+        let effective_blind = ((self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32).max(1);
+        Some(effective_blind * mult as i32)
+    }
+
+    pub(crate) fn is_player_at_max_bet(&self, player: &Player) -> bool {
+        if let Some(max_bet) = self.get_current_max_bet() {
+            player.total_bet >= max_bet
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn is_player_all_in(&self, player: &Player) -> bool {
+        player.chips == 0 || self.is_player_at_max_bet(player)
     }
 
     /**
@@ -716,7 +744,7 @@ impl Game {
 
             let turn_complete = self.current_turn_complete();
             let current_player = &self.players[self.turn_index];
-            let can_play_specials = !current_player.special_cards.is_empty() && !self.modifiers.specials_blocked();
+            let _can_play_specials = !current_player.special_cards.is_empty() && !self.modifiers.specials_blocked();
 
             if !turn_complete {
                 match current_player.player_type {
@@ -773,8 +801,14 @@ impl Game {
                 p.turn_ended = true;
             }
             Action::Call => {
+                let maybe_max_bet = self.get_current_max_bet();
                 let p = &mut self.players[player_index];
-                let call_amount = (self.bet - p.round_bet).min(p.chips);
+                let max_hand_capacity = if let Some(max_bet) = maybe_max_bet {
+                    (max_bet - p.total_bet).max(0)
+                } else {
+                    i32::MAX
+                };
+                let call_amount = (self.bet - p.round_bet).max(0).min(p.chips).min(max_hand_capacity);
                 p.chips -= call_amount;
                 p.round_bet += call_amount;
                 p.total_bet += call_amount;
@@ -788,11 +822,34 @@ impl Game {
                 }
 
                 let p = &self.players[player_index];
-                let max_raise = p.chips - (self.bet - p.round_bet).max(0);
-                let true_raise = amount.min(max_raise);
-                let raise_cost = ((self.bet + true_raise) - p.round_bet).min(p.chips);
+                if self.is_player_at_max_bet(p) {
+                    return Err(GameError::InvalidAction);
+                }
 
-                if amount < (self.ctx.min_raise as f64 * self.modifiers.vars.ante_multiplier) as i32 && p.chips > raise_cost {
+                let maybe_max_bet = self.get_current_max_bet();
+                let max_hand_capacity = if let Some(max_bet) = maybe_max_bet {
+                    (max_bet - p.total_bet).max(0)
+                } else {
+                    i32::MAX
+                };
+
+                let call_portion = (self.bet - p.round_bet).max(0).min(p.chips).min(max_hand_capacity);
+                let remaining_raise_cap = (max_hand_capacity - call_portion).max(0);
+
+                if remaining_raise_cap == 0 {
+                    return Err(GameError::InvalidAction);
+                }
+
+                let remaining_chips_for_raise = (p.chips - (self.bet - p.round_bet).max(0)).max(0);
+                let max_raise = remaining_chips_for_raise.min(remaining_raise_cap);
+                let true_raise = amount.min(max_raise);
+                let raise_cost = ((self.bet + true_raise) - p.round_bet).min(p.chips).min(max_hand_capacity);
+
+                let effective_min_raise = (self.ctx.min_raise as f64 * self.modifiers.vars.ante_multiplier) as i32;
+                let new_total_bet = p.total_bet + raise_cost;
+                let reached_cap = maybe_max_bet.map(|m| new_total_bet >= m).unwrap_or(false);
+
+                if amount < effective_min_raise && p.chips > raise_cost && !reached_cap {
                     return Err(GameError::RaiseBelowMin);
                 }
 
@@ -860,7 +917,7 @@ impl Game {
         let current_player = &self.players[self.turn_index];
         let can_play_specials = !current_player.special_cards.is_empty() && !self.modifiers.specials_blocked();
 
-        current_player.folded || current_player.acted || current_player.turn_ended || (current_player.chips == 0 && !can_play_specials)
+        current_player.folded || current_player.acted || current_player.turn_ended || (self.is_player_all_in(current_player) && !can_play_specials)
     }
 
     fn advance_turn_index(&mut self) {
@@ -937,7 +994,7 @@ impl Game {
         }
         active_players.iter().all(|p| {
             let can_play_specials = !p.special_cards.is_empty() && !self.modifiers.specials_blocked();
-            (p.chips == 0 && (!can_play_specials || p.acted || p.turn_ended))
+            (self.is_player_all_in(p) && (!can_play_specials || p.acted || p.turn_ended))
                 || (p.acted && p.round_bet == self.bet)
         })
     }

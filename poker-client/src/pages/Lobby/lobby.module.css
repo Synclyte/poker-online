@@ -254,8 +254,26 @@
     background: var(--box-secondary-colour);
     padding: 0.75rem;
     border: 4px solid var(--light-box-colour);
-    height: 340px;
+    min-height: 385px;
+    height: 100%;
     box-sizing: border-box;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-colour) var(--box-secondary-colour);
+}
+
+.botFormStack::-webkit-scrollbar {
+    width: 8px;
+}
+
+.botFormStack::-webkit-scrollbar-track {
+    background: var(--box-secondary-colour);
+    border-left: 2px solid var(--light-box-colour);
+}
+
+.botFormStack::-webkit-scrollbar-thumb {
+    background: var(--border-colour);
+    border: 2px solid var(--box-secondary-colour);
 }
 
 .configContainer {

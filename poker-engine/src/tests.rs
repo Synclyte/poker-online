@@ -48,7 +48,8 @@ mod tests {
                 special_card_limit: 3, 
                 deck_type: DeckType::Standard, 
                 max_players: player_count + bot_count, 
-                round_limit: 30  
+                round_limit: 30,
+                max_bet_multiplier: None,
             }
         }
 
@@ -778,6 +779,156 @@ mod tests {
             let ok_res = give_special_card(SpecialCard::DrawCardSelf, 2, limit_ignored, p0_id, &mut game, &mut events);
             assert!(ok_res.is_ok(), "Should exceed limit when ignore_limit is true");
             assert_eq!(game.players[p0_idx].special_cards.len(), limit + 2);
+        }
+
+        #[test]
+        fn test_bet_capped_at_maximum_threshold() {
+            let mut game = get_configured_started_game(2, 0);
+            game.ctx.max_bet_multiplier = Some(25);
+            // blind cost is 20 and multiplier is 25x, so max bet should be 500
+            assert_eq!(game.get_current_max_bet(), Some(500));
+
+            let p_turn = game.get_current_turn_player_id();
+            let p_idx = game.get_player_index(p_turn).unwrap();
+            game.players[p_idx].chips = 5000;
+
+            // attempt to raise by 2000
+            let res = game.player_move(p_turn, Action::Raise { amount: 2000 });
+            assert!(res.is_ok());
+
+            // player total bet should still be 500
+            assert_eq!(game.players[p_idx].total_bet, 500);
+            assert_eq!(game.players[p_idx].round_bet, 500);
+            assert_eq!(game.bet, 500);
+            assert!(game.is_player_at_max_bet(&game.players[p_idx]));
+        }
+
+        #[test]
+        fn test_player_at_max_bet_cannot_raise() {
+            let mut game = get_configured_started_game(2, 0);
+            game.ctx.max_bet_multiplier = Some(25);
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            game.players[p0_idx].chips = 5000;
+
+            // player 0 raises to cap (500)
+            let _ = game.player_move(p0_id, Action::Raise { amount: 1000 });
+            assert_eq!(game.players[p0_idx].total_bet, 500);
+
+            // error on additional raise
+            let mut events = Vec::new();
+            let raise_err = game.apply_action(p0_idx, Action::Raise { amount: 100 }, &mut events);
+            assert!(raise_err.is_err(), "Player at max bet and should not be able to raise further");
+        }
+
+        #[test]
+        fn test_player_at_max_bet_all_in_treatment_and_call() {
+            let mut game = get_configured_started_game(2, 0);
+            game.ctx.max_bet_multiplier = Some(25);
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = (p0_idx + 1) % 2;
+            let p1_id = game.players[p1_idx].id;
+
+            game.players[p0_idx].chips = 5000;
+            game.players[p1_idx].chips = 5000;
+
+            // player 0 raises to cap (500)
+            let _ = game.player_move(p0_id, Action::Raise { amount: 1000 });
+            assert_eq!(game.players[p0_idx].total_bet, 500);
+
+            // player 1 can call to match the max bet
+            let res = game.player_move(p1_id, Action::Call);
+            assert!(res.is_ok());
+            assert_eq!(game.players[p1_idx].total_bet, 500);
+            assert!(game.is_player_at_max_bet(&game.players[p1_idx]));
+
+            // as both are now at max bet and acted, round must advance
+            assert_ne!(game.round, Round::Preflop, "Round should advance when all active players match max bet");
+        }
+
+        #[test]
+        fn test_max_bet_persists_across_rounds_within_hand() {
+            let mut game = get_configured_started_game(2, 0);
+            game.ctx.max_bet_multiplier = Some(25);
+            // cap is 500 per hand
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = (p0_idx + 1) % 2;
+            let p1_id = game.players[p1_idx].id;
+
+            game.players[p0_idx].chips = 5000;
+            game.players[p1_idx].chips = 5000;
+
+            // player 0 calls for 20 on preflop
+            let _ = game.player_move(p0_id, Action::Call);
+            // player 1 calls
+            let _ = game.player_move(p1_id, Action::Call);
+
+            // both players should have bet 20 by flop
+            assert_eq!(game.round, Round::Flop);
+            assert_eq!(game.players[p0_idx].total_bet, 20);
+            assert_eq!(game.players[p1_idx].total_bet, 20);
+
+            let flop_turn_id = game.get_current_turn_player_id();
+            let flop_turn_idx = game.get_player_index(flop_turn_id).unwrap();
+
+            // attempt to raise by 2000 on the flop
+            let res = game.player_move(flop_turn_id, Action::Raise { amount: 2000 });
+            assert!(res.is_ok());
+
+            // flop raise must be capped at 480 (reaching 500 total_bet for the hand)
+            assert_eq!(game.players[flop_turn_idx].round_bet, 480);
+            assert_eq!(game.players[flop_turn_idx].total_bet, 500);
+            assert!(game.is_player_at_max_bet(&game.players[flop_turn_idx]));
+        }
+
+        #[test]
+        fn test_max_bet_scales_dynamically_with_ante_up() {
+            let mut game = get_configured_started_game(2, 0);
+            game.ctx.max_bet_multiplier = Some(25);
+            // cap is 500 chips
+            assert_eq!(game.get_current_max_bet(), Some(500));
+
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            game.players[p0_idx].chips = 5000;
+            game.players[p0_idx].special_cards.push(SpecialCard::AnteUp);
+
+            // play Ante Up special card
+            let res = game.player_move(p0_id, Action::PlaySpecial { 
+                card: SpecialCard::AnteUp, 
+                target_id: None, 
+                card_index: None 
+            });
+            assert!(res.is_ok());
+
+            // ante multiplier is now 2.0, so blind cost is 40 - max bet should now be 1000
+            assert_eq!(game.get_current_max_bet(), Some(1000));
+
+            // player can now raise up to 1000
+            let raise_res = game.player_move(p0_id, Action::Raise { amount: 2000 });
+            assert!(raise_res.is_ok());
+            assert_eq!(game.players[p0_idx].round_bet, 1000);
+            assert_eq!(game.bet, 1000);
+        }
+
+        #[test]
+        fn test_uncapped_mode() {
+            let mut game = get_configured_started_game(2, 0);
+            // set max_bet_multiplier to none, uncapping it
+            game.ctx.max_bet_multiplier = None;
+            assert_eq!(game.get_current_max_bet(), None);
+
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            game.players[p0_idx].chips = 5000;
+
+            // player raises by 2000
+            let res = game.player_move(p0_id, Action::Raise { amount: 2000 });
+            assert!(res.is_ok());
+            // round bet goes through, and total bet is now blind cost (20) + bet (2000)
+            assert_eq!(game.players[p0_idx].round_bet, 2020);
         }
     }
 

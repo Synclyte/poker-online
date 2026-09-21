@@ -60,6 +60,14 @@ class SoundManager {
         this.audioSources.set("call", callSfx);
         this.audioSources.set("countdown", countdownSfx);
 
+        if (typeof window !== "undefined") {
+            try {
+                const countdownAudio = new Audio(countdownSfx);
+                countdownAudio.preload = "auto";
+                this.soundPool.set("countdown", [countdownAudio]);
+            } catch { }
+        }
+
         if (typeof window !== "undefined" && window.localStorage) {
             const savedVol = localStorage.getItem("globalVolume");
             if (savedVol !== null) {
@@ -139,8 +147,8 @@ class SoundManager {
             const ctx = this.getAudioContext();
             if (!ctx) return;
 
-            const numClacks = Math.max(2, Math.min(16, Math.round(chipCount)));
-            const totalDurationSec = Math.max(0.2, Math.min(1.5, durationMs / 1000));
+            const numClacks = Math.max(2, Math.min(30, Math.round(chipCount)));
+            const totalDurationSec = Math.max(0.2, Math.min(2, durationMs / 1000));
             const intervalSec = totalDurationSec / numClacks;
 
             const now = ctx.currentTime;
@@ -274,13 +282,25 @@ class SoundManager {
         if (!src) return;
 
         try {
-            const audio = new Audio(src);
+            let pool = this.soundPool.get("countdown");
+            if (!pool) {
+                pool = [];
+                this.soundPool.set("countdown", pool);
+            }
+
+            let audio = pool.find(a => a.paused || a.ended);
+            if (!audio) {
+                audio = new Audio(src);
+                audio.preload = "auto";
+                if (pool.length < 5) {
+                    pool.push(audio);
+                }
+            }
+
             const multiplier = this.soundVolumeMultipliers.get("countdown") ?? 0.5;
-
             audio.volume = Math.min(1, Math.max(0, this.volume * multiplier));
-            // TODO: pitch up subsequent steps
-
-            setTimeout(() => audio.play().catch(() => {}), 500);
+            audio.currentTime = 0;
+            audio.play().catch(() => {});
         } catch {}
     }
 }

@@ -67,6 +67,7 @@ interface GameConfig {
     turnTimeout: number;
     isPrivate: boolean;
     roundLimit: number;
+    maxBetMultiplier: number;
 }
 
 interface EngineConfig {
@@ -79,6 +80,7 @@ interface EngineConfig {
     deckType: string;
     maxPlayers: number;
     roundLimit: number;
+    maxBetMultiplier: number;
 }
 
 interface Player {
@@ -146,6 +148,19 @@ const roomMap = new Map<string, RoomData>();
 const sessionMap = new Map<string, SessionData>();
 const socketSessionMap = new Map<string, string>();
 const timers = new Map<string, NodeJS.Timeout>();
+
+interface RoomTurnTimer {
+    turnPlayerId: number;
+    turnSeq: number;
+    status: "waiting" | "running";
+    safetyTimer?: NodeJS.Timeout | undefined;
+    timeoutTimer?: NodeJS.Timeout | undefined;
+    deadline?: number | undefined;
+    limit: number;
+}
+
+const roomTurnTimers = new Map<string, RoomTurnTimer>();
+const MAX_ANIMATION_BUDGET_MS = 4000;
 
 function generateSessionToken() {
     return Math.random().toString(36).substring(2, 8) + Date.now().toString(36);
@@ -226,6 +241,7 @@ const configBounds: ConfigDict = {
     "startingChips": [100, 10000],
     "specialCardLimit": [0, 10],
     "roundLimit": [1, 100],
+    "maxBetMultiplier": [5, 55],
 }
 
 const clampValue = (value: any, boundName: string) => {
@@ -244,6 +260,9 @@ function updateGameConfig(room: RoomData) {
     const blindSize = clampValue(room.config.blindSize, "blindSize") ?? room.config.blindSize;
     const minRaise = clampValue(room.config.minRaise, "minRaise") ?? room.config.minRaise;
     const startingChips = clampValue(room.config.startingChips, "startingChips") ?? room.config.startingChips;
+    const rawMaxBetMultiplier = clampValue(room.config.maxBetMultiplier, "maxBetMultiplier") ?? room.config.maxBetMultiplier;
+    const maxBetBound = configBounds["maxBetMultiplier"]?.[1] ?? 55;
+    const maxBetMultiplier = (rawMaxBetMultiplier >= maxBetBound || rawMaxBetMultiplier === 0) ? 0 : rawMaxBetMultiplier;
 
     const newConfig: EngineConfig = {
         players: buildPlayerList(room),
@@ -255,6 +274,7 @@ function updateGameConfig(room: RoomData) {
         deckType: room.config.deckType,
         maxPlayers: room.config.maxPlayers,
         roundLimit: room.config.roundLimit,
+        maxBetMultiplier,
     }
 
     try {
@@ -267,52 +287,121 @@ function updateGameConfig(room: RoomData) {
     }
 }
 
-/**
- * Forces the end of the next turn if the player does not make a move within the specified time limit
- */
-function turnTimeout(roomId: string, game: GameAPI, limit: number) {
+function clearRoomTurnTimer(roomId: string) {
     clearTimeout(timers.get(roomId));
+    timers.delete(roomId);
+
+    const timer = roomTurnTimers.get(roomId);
+    if (timer) {
+        if (timer.safetyTimer) clearTimeout(timer.safetyTimer);
+        if (timer.timeoutTimer) clearTimeout(timer.timeoutTimer);
+        roomTurnTimers.delete(roomId);
+    }
+}
+
+/**
+ * Initiates the turn transition. Starts a safety ceiling timer waiting for clientReady.
+ */
+function startTurnTransition(roomId: string, game: GameAPI, limit: number) {
+    clearRoomTurnTimer(roomId);
 
     const activeRounds = ["preflop", "flop", "turn", "river"];
     if (!activeRounds.includes(game.get_round())) {
-        timers.delete(roomId);
         return;
     }
 
-    // forces the current player to send a "timeout" move after the time limit expires
-    const timerId = setTimeout(() => {
-        if (!activeRounds.includes(game.get_round())) {
-            timers.delete(roomId);
-            return;
-        }
+    const turnPlayerId = game.get_current_turn_player();
+    if (turnPlayerId === null || turnPlayerId === undefined) {
+        return;
+    }
 
-        let response = JSON.parse(game.player_move(game.get_current_turn_player(), "timeout"));
+    const prevSeq = roomTurnTimers.get(roomId)?.turnSeq ?? 0;
+    const turnSeq = prevSeq + 1;
 
-        if (isError(response)) {
-            io.to(roomId).emit(
-                response.responseType,
-                response.message
-            );
+    const roomTimer: RoomTurnTimer = {
+        turnPlayerId,
+        turnSeq,
+        status: "waiting",
+        limit,
+    };
 
-            timers.delete(roomId);
-            return;
-        }
+    roomTimer.safetyTimer = setTimeout(() => {
+        startTurnCountdown(roomId, game, turnSeq);
+    }, MAX_ANIMATION_BUDGET_MS);
 
-        io.to(roomId).emit("moveTimeout", response);
+    roomTurnTimers.set(roomId, roomTimer);
+}
 
-        const room = roomMap.get(roomId);
-        if (room) {
-            broadcastGameState(room, response.events);
-        }
+/**
+ * Starts the authoritative turn countdown once clientReady is received or safety ceiling fires.
+ */
+function startTurnCountdown(roomId: string, game: GameAPI, turnSeq: number) {
+    const timer = roomTurnTimers.get(roomId);
+    if (!timer || timer.turnSeq !== turnSeq || timer.status !== "waiting") {
+        return;
+    }
 
-        if (activeRounds.includes(game.get_round())) {
-            turnTimeout(roomId, game, limit);
-        } else {
-            timers.delete(roomId);
-        }
-    }, limit);
+    const activeRounds = ["preflop", "flop", "turn", "river"];
+    if (!activeRounds.includes(game.get_round())) {
+        clearRoomTurnTimer(roomId);
+        return;
+    }
 
-    timers.set(roomId, timerId);
+    if (timer.safetyTimer) {
+        clearTimeout(timer.safetyTimer);
+        timer.safetyTimer = undefined;
+    }
+
+    timer.status = "running";
+    const deadline = Date.now() + timer.limit;
+    timer.deadline = deadline;
+
+    timer.timeoutTimer = setTimeout(() => {
+        executeTurnTimeout(roomId, game, turnSeq);
+    }, timer.limit);
+
+    io.to(roomId).emit("turnTimerStarted", {
+        turnPlayerId: timer.turnPlayerId,
+        duration: Math.round(timer.limit / 1000),
+        deadline,
+    });
+}
+
+function executeTurnTimeout(roomId: string, game: GameAPI, turnSeq: number) {
+    const timer = roomTurnTimers.get(roomId);
+    if (!timer || timer.turnSeq !== turnSeq) {
+        return;
+    }
+
+    const activeRounds = ["preflop", "flop", "turn", "river"];
+    if (!activeRounds.includes(game.get_round())) {
+        clearRoomTurnTimer(roomId);
+        return;
+    }
+
+    let response = JSON.parse(game.player_move(timer.turnPlayerId, "timeout"));
+
+    if (isError(response)) {
+        io.to(roomId).emit(
+            response.responseType,
+            response.message
+        );
+        clearRoomTurnTimer(roomId);
+        return;
+    }
+
+    io.to(roomId).emit("moveTimeout", response);
+
+    const room = roomMap.get(roomId);
+    if (room) {
+        broadcastGameState(room, response.events);
+    }
+
+    if (activeRounds.includes(game.get_round())) {
+        startTurnTransition(roomId, game, timer.limit);
+    } else {
+        clearRoomTurnTimer(roomId);
+    }
 }
 
 /**
@@ -328,8 +417,7 @@ function handleRoomRemoval(roomId: string) {
         room.roomCloseTimer = setTimeout(() => {
             if (room.activeConnections <= 0) {
                 roomMap.delete(roomId);
-                clearTimeout(timers.get(roomId));
-                timers.delete(roomId);
+                clearRoomTurnTimer(roomId);
             }
         }, closeTime);
         console.log(`Room ${roomId} flagged for removal in ${(closeTime / 1000).toFixed(1)} seconds`);
@@ -429,6 +517,7 @@ function getCompleteConfig(config: any): GameConfig | undefined {
             turnTimeout: parsedConfig.turnTimeout ?? 40,
             isPrivate: parsedConfig.isPrivate ?? false,
             roundLimit: parsedConfig.roundLimit ?? 30,
+            maxBetMultiplier: typeof parsedConfig.maxBetMultiplier === "number" ? parsedConfig.maxBetMultiplier : 15,
         };
 
         return gameConfig;
@@ -588,6 +677,7 @@ io.on("connection", (socket: Socket) => {
             room.config.deckType = gameConfig.deckType ?? room.config.deckType ?? "standard";
             room.config.specialCardLimit = clampValue(gameConfig.specialCardLimit, "specialCardLimit") ?? room.config.specialCardLimit;
             room.config.roundLimit = clampValue(gameConfig.roundLimit, "roundLimit") ?? room.config.roundLimit;
+            room.config.maxBetMultiplier = clampValue(gameConfig.maxBetMultiplier, "maxBetMultiplier") ?? room.config.maxBetMultiplier;
 
             updateGameConfig(room);
             broadcastLobbyUpdate(room);
@@ -870,6 +960,15 @@ io.on("connection", (socket: Socket) => {
                 }
 
                 socket.emit("gameUpdate", playerState);
+
+                const timer = roomTurnTimers.get(session.roomId);
+                if (timer && timer.status === "running" && timer.deadline && timer.deadline > Date.now()) {
+                    socket.emit("turnTimerStarted", {
+                        turnPlayerId: timer.turnPlayerId,
+                        duration: Math.max(0, Math.ceil((timer.deadline - Date.now()) / 1000)),
+                        deadline: timer.deadline,
+                    });
+                }
             } catch (e) { }
         });
     });
@@ -962,7 +1061,7 @@ io.on("connection", (socket: Socket) => {
                 io.to(session.roomId).emit("gameStarted");
                 broadcastGameState(room, startResult.events);
                 broadcastLobbyUpdate(room);
-                turnTimeout(session.roomId, room.game, room.config.turnTimeout * 1000);
+                startTurnTransition(session.roomId, room.game, room.config.turnTimeout * 1000);
             } catch (e) {
                 io.to(room.roomId).emit("An unexpected error occurred while attempting to start the game");
             }
@@ -980,7 +1079,7 @@ io.on("connection", (socket: Socket) => {
                 if (isError(moveResult)) return socket.emit(moveResult.responseType, moveResult.message);
 
                 broadcastGameState(room, moveResult.events);
-                turnTimeout(
+                startTurnTransition(
                     room.roomId,
                     room.game,
                     room.config.turnTimeout * 1000
@@ -988,6 +1087,16 @@ io.on("connection", (socket: Socket) => {
             } catch (err) {
                 socket.emit("error", "Invalid move");
             }
+        });
+    });
+
+    socket.on("clientReady", () => {
+        withGameContext(socket, false, (room, session) => {
+            const timer = roomTurnTimers.get(session.roomId);
+            if (!timer) return;
+            if (timer.status !== "waiting") return;
+            if (timer.turnPlayerId !== session.playerId) return;
+            startTurnCountdown(session.roomId, room.game, timer.turnSeq);
         });
     });
 

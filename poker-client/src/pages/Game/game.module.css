@@ -569,7 +569,9 @@
     bottom: calc(100% + 12px);
     left: 50%;
     transform: translateX(-50%);
-    background: var(--box-secondary-colour);
+    background: rgba(20, 20, 26, 0.75);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
     border: 2px solid var(--input-focus-colour);
     padding: 8px 12px;
     font-size: 1.5rem;
@@ -1007,7 +1009,10 @@
 
 .selectedTargetSeat {
     transform: translate(-50%, -50%) scale(1.06) !important;
-    filter: drop-shadow(4px 4px 0px var(--input-focus-colour)) !important;
+}
+
+.selectedTargetSeat [class*="borderBg"] {
+    background: var(--input-focus-colour) !important;
 }
 
 .activeModifiersContainer {
@@ -1084,7 +1089,9 @@
     right: calc(100% + 12px);
     top: 50%;
     transform: translateY(-50%);
-    background: var(--box-secondary-colour);
+    background: rgba(20, 20, 26, 0.8);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
     border: 2px solid var(--input-focus-colour);
     padding: 8px 12px;
     font-size: 1.5rem;
@@ -1242,9 +1249,14 @@
 @keyframes pulse {
     0% {
         transform: scale(0.2);
+        opacity: 1;
+    }
+    85% {
+        opacity: 1;
     }
     100% {
         transform: scale(4);
+        opacity: 0;
     }
 }
 
@@ -1264,7 +1276,7 @@
     font-family: 'Jersey 15', 'Jersey 10', sans-serif;
     font-weight: bold;
     color: #b90000;
-    animation: pulse 1s cubic-bezier(1, -0.06, 0.33, 0.99) infinite;
+    animation: pulse 1s cubic-bezier(1, -0.06, 0.33, 0.99) forwards;
 }
 
 @media (max-width: 768px) {

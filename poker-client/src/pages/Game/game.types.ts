@@ -47,6 +47,7 @@ export interface GameConfig {
     turnTimeout: number;
     isPrivate: boolean;
     roundLimit: number;
+    maxBetMultiplier?: number;
 }
 
 export interface MoveEvent {
@@ -86,6 +87,7 @@ export interface GameStateData {
         gambleSuccessChance?: number;
     };
     gamesPlayed?: number;
+    maxBet?: number | null;
 }
 
 export interface MoveResult {

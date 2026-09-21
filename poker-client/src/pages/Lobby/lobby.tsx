@@ -27,6 +27,7 @@ interface LobbyConfig {
     turnTimeout: number | '';
     isPrivate: boolean;
     roundLimit: number | '';
+    maxBetMultiplier: number | '';
 }
 type AIType = "Risky" | "Safe" | "Smart" | "Random";
 
@@ -62,14 +63,15 @@ export function Lobby() {
     const [players, setPlayers] = useState<Player[]>([]);
     const [config, setConfig] = useState<LobbyConfig>({
         maxPlayers: 4,
-        blindSize: 10,
-        minRaise: 20,
+        blindSize: 20,
+        minRaise: 10,
         startingChips: 1000,
         specialCardLimit: 3,
         deckType: "standard",
         turnTimeout: 30,
         isPrivate: false,
         roundLimit: 30,
+        maxBetMultiplier: 15,
     });
 
     const [botToAdd, setBotToAdd] = useState<string>("Smart");
@@ -254,6 +256,12 @@ export function Lobby() {
                                             <span className={styles.summaryKey}>Round Limit:</span>
                                             <span className={styles.summaryVal}>{config.roundLimit || 0}</span>
                                         </div>
+                                        <div className={styles.summaryRow}>
+                                            <span className={styles.summaryKey}>Max Bet Multiplier:</span>
+                                            <span className={styles.summaryVal}>
+                                                {config.maxBetMultiplier === '' || config.maxBetMultiplier >= 55 || config.maxBetMultiplier === 0 ? "Uncapped" : `${config.maxBetMultiplier}x`}
+                                            </span>
+                                        </div>
                                     </div>
 
                                     {isHost && (
@@ -425,7 +433,7 @@ export function Lobby() {
                                     />
 
                                     <NumberSetting
-                                        label="Small Blind" range="0-200"
+                                        label="Blind Cost" range="0-200"
                                         value={config.blindSize} min={0} max={200} step={5}
                                         onChange={(val) => updateConfig("blindSize", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
@@ -435,6 +443,14 @@ export function Lobby() {
                                         label="Minimum Raise" range="1-200"
                                         value={config.minRaise} min={1} max={200} step={5}
                                         onChange={(val) => updateConfig("minRaise", val)}
+                                        styles={styles} boxBorderColour={boxBorderColour}
+                                    />
+
+                                    <NumberSetting
+                                        label="Max Bet" range={`5x-50x Blind Cost`}
+                                        value={config.maxBetMultiplier} min={5} max={55} step={5}
+                                        formatValue={(val) => val === '' ? '' : (val >= 55 || val === 0 ? "Uncapped" : `${val}x Blind Cost`)}
+                                        onChange={(val) => updateConfig("maxBetMultiplier", val)}
                                         styles={styles} boxBorderColour={boxBorderColour}
                                     />
                                 </div>

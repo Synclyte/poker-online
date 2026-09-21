@@ -84,6 +84,7 @@ export function Game() {
     const [turnTimeRemaining, setTurnTimeRemaining] = useState<number | null>(null);
     const turnTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const turnStartTimeRef = useRef<number | null>(null);
+    const turnDeadlineRef = useRef<number | null>(null);
     const activeTurnPlayerIdRef = useRef<number | null>(null);
     const roundNameRef = useRef<string | null>(null);
     const [turnStateTick, setTurnStateTick] = useState<number>(0);
@@ -681,9 +682,8 @@ export function Game() {
 
                             trackedBets.set(event.actorId, targetBet);
 
-                            if (betDelta <= 0) {
-                                soundManager.playSound("call");
-                                const seatElem = seatRefs.current[event.actorId];
+                            const playSeatCallAnimation = async () => {
+                                const seatElem = seatRefs.current[event.actorId!];
                                 if (seatElem) {
                                     seatElem.classList.remove(styles.animatingCheck);
                                     void seatElem.offsetWidth;
@@ -691,15 +691,27 @@ export function Game() {
                                     await wait(timing.check);
                                     seatElem.classList.remove(styles.animatingCheck);
                                 }
+                            };
+
+                            if (betDelta <= 0) {
+                                if (action.type === "call") {
+                                    soundManager.playSound("call");
+                                    await playSeatCallAnimation();
+                                }
                                 return;
                             }
 
+                            let seatAnimPromise: Promise<void> | null = null;
                             if (action.type === "call") {
                                 soundManager.playSound("call");
+                                seatAnimPromise = playSeatCallAnimation();
                             }
 
                             const delay = spawnChipStream(`player-${event.actorId}`, "pot", betDelta);
-                            await wait(delay + timing.betChipAdded);
+                            await Promise.all([
+                                seatAnimPromise ?? Promise.resolve(),
+                                wait(delay + timing.betChipAdded)
+                            ]);
                             await updateIntermediateState(event.actorId, -betDelta, nextPlayer.roundBet, nextPlayer.totalBet);
 
                             return;
@@ -730,20 +742,33 @@ export function Game() {
                         }
 
                         case "discardSpecial": {
+                            const viewState = cloneCurrentState();
                             const actorId = event.actorId;
-                            const cardIndex = action.cardIndex;
+                            const cardIndex = (action as any).cardIndex ?? (action as any).card_index ?? (action as any).index;
                             if (actorId !== null && cardIndex !== undefined) {
                                 const currentMyId = myIdRef.current ?? myId;
                                 const isSelf = actorId === currentMyId;
                                 const refKey = isSelf ? `special-${cardIndex}` : `special-seat-${actorId}`;
                                 const selectorFallback = isSelf
                                     ? `[data-slot-attr="special-${cardIndex}"] .${styles.cardInner}`
-                                    : `[data-seat-id="${actorId}"] .${styles.cardInner}`;
+                                    : `[data-seat-id="${actorId}"] .${styles.seatSpecialSlot} .${styles.cardInner}`;
 
                                 const target = await resolveTargetElement(refKey, selectorFallback);
                                 if (target) {
                                     soundManager.playSound("dissolve");
                                     await triggerInPlaceAnimation(target, target, styles.animatingDissolve, timing.dissolve);
+                                    target.style.opacity = "0";
+                                }
+
+                                const player = viewState.players.find(p => p.id === actorId);
+                                if (player && cardIndex >= 0 && cardIndex < player.specialCards.length) {
+                                    player.specialCards.splice(cardIndex, 1);
+                                    applyState(viewState);
+                                    await nextFrame();
+                                }
+
+                                if (target) {
+                                    target.style.opacity = "";
                                 }
                             }
                             return;
@@ -1220,7 +1245,16 @@ export function Game() {
             isProcessingQueue.current = false;
             setIsAnimating(false);
 
-            if (eventQueueRef.current.length > 0) processEventQueue();
+            if (eventQueueRef.current.length > 0) {
+                processEventQueue();
+            } else {
+                const currentTurnPlayer = gameStateRef.current?.players.find(p => p.isTurn);
+                const currentRound = gameStateRef.current?.roundName;
+                const isRoundActive = currentRound && currentRound !== "room" && currentRound !== "preround" && currentRound !== "showdown" && currentRound !== "gameover";
+                if (currentTurnPlayer && currentTurnPlayer.id === myIdRef.current && isRoundActive) {
+                    socket?.emit("clientReady");
+                }
+            }
         }
     };
 
@@ -1248,10 +1282,12 @@ export function Game() {
                 const nextTurnId = nextTurnPlayer?.id ?? null;
                 const nextRound = response.gameState.roundName;
 
-                if (nextTurnId !== activeTurnPlayerIdRef.current || nextRound !== roundNameRef.current || !turnStartTimeRef.current) {
+                if (nextTurnId !== activeTurnPlayerIdRef.current || nextRound !== roundNameRef.current) {
                     activeTurnPlayerIdRef.current = nextTurnId;
                     roundNameRef.current = nextRound;
-                    turnStartTimeRef.current = Date.now();
+                    turnDeadlineRef.current = null;
+                    turnStartTimeRef.current = null;
+                    setTurnTimeRemaining(null);
                     setTurnStateTick(t => t + 1);
                 }
             }
@@ -1266,9 +1302,18 @@ export function Game() {
         const handleError = (msg: string) => showToast(msg, "error");
         const handleWarning = (msg: string) => showToast(msg, "warning");
 
+        const handleTurnTimerStarted = (data: { turnPlayerId: number; duration: number; deadline: number }) => {
+            activeTurnPlayerIdRef.current = data.turnPlayerId;
+            turnDeadlineRef.current = data.deadline;
+            turnStartTimeRef.current = Date.now();
+            setTurnTimeRemaining(data.duration);
+            setTurnStateTick(t => t + 1);
+        };
+
         socket.on("clientInfo", handleClientInfo);
         socket.on("lobbyUpdate", handleLobbyUpdate);
         socket.on("gameUpdate", handleGameUpdate);
+        socket.on("turnTimerStarted", handleTurnTimerStarted);
         socket.on("info", handleInfo);
         socket.on("error", handleError);
         socket.on("warning", handleWarning);
@@ -1278,9 +1323,11 @@ export function Game() {
             socket.off("clientInfo", handleClientInfo);
             socket.off("lobbyUpdate", handleLobbyUpdate);
             socket.off("gameUpdate", handleGameUpdate);
+            socket.off("turnTimerStarted", handleTurnTimerStarted);
             socket.off("info", handleInfo);
             socket.off("error", handleError);
             socket.off("warning", handleWarning);
+            socket.off("gameConfig", handleGameConfig);
         };
     }, [socket, isConnected, navigate, showToast]);
 
@@ -1372,7 +1419,7 @@ export function Game() {
 
         lastPlayedSpecialSlotIndexRef.current = selectedSpecialCardIndex;
 
-        socket.emit("playerMove", `special ${selectedSpecialCardValue} ${String(targetId ?? 0)} ${String(cardIndex ?? 0)}`);
+        sendPlayerMove(`special ${selectedSpecialCardValue} ${String(targetId ?? 0)} ${String(cardIndex ?? 0)}`);
 
         cancelSelectedSpecialCard();
     };
@@ -1386,8 +1433,20 @@ export function Game() {
 
     const discardSelectedSpecialCard = () => {
         if (!socket || selectedSpecialCardIndex == null) return;
-        socket.emit("playerMove", `discardspecial ${selectedSpecialCardIndex}`);
+        sendPlayerMove(`discardspecial ${selectedSpecialCardIndex}`);
         cancelSelectedSpecialCard();
+    };
+
+    const sendPlayerMove = (moveStr: string) => {
+        if (!socket) return;
+        turnDeadlineRef.current = null;
+        turnStartTimeRef.current = null;
+        setTurnTimeRemaining(null);
+        if (turnTimerIntervalRef.current) {
+            clearInterval(turnTimerIntervalRef.current);
+            turnTimerIntervalRef.current = null;
+        }
+        socket.emit("playerMove", moveStr);
     };
 
     const isMyTurn = meInGame?.isTurn && gameState?.roundName !== "room" && gameState?.roundName !== "preround" && gameState?.roundName !== "showdown";
@@ -1396,11 +1455,30 @@ export function Game() {
     const anteMult = gameState?.modifierVars?.anteMult ?? 1;
     const effectiveMinRaise = Math.round((config?.minRaise ?? 10) * anteMult);
 
+    const maxBetMult = config?.maxBetMultiplier ?? 25;
+    const isUncapped = maxBetMult <= 0 || maxBetMult >= 55;
+    const effectiveBlind = Math.round((config?.blindSize ?? 20) * anteMult);
+    const fallbackMaxBet = isUncapped ? null : effectiveBlind * maxBetMult;
+    const effectiveMaxBet = gameState?.maxBet !== undefined ? gameState.maxBet : fallbackMaxBet;
+
+    const isPlayerAtMaxBet = effectiveMaxBet !== null && (meInGame?.totalBet ?? 0) >= effectiveMaxBet;
+    const remainingHandCapacity = effectiveMaxBet !== null ? Math.max(0, effectiveMaxBet - (meInGame?.totalBet ?? 0)) : Infinity;
+    const callPortion = Math.min(Math.max(0, currentBetToCall), meInGame?.chips ?? 0, remainingHandCapacity);
+    const maxRaiseFromCap = Math.max(0, remainingHandCapacity - callPortion);
+    const maxRaiseFromChips = Math.max(0, (meInGame?.chips ?? 0) - Math.max(0, currentBetToCall));
+    const maxRaisePossible = Math.max(0, Math.min(maxRaiseFromChips, maxRaiseFromCap));
+    const canRaise = isMyTurn && !meInGame.acted && !isPlayerAtMaxBet && maxRaisePossible > 0;
+    const actualCallCost = Math.min(Math.max(0, currentBetToCall), meInGame?.chips ?? 0, remainingHandCapacity);
+    const minRaisePossible = Math.min(effectiveMinRaise, maxRaisePossible);
+
     useEffect(() => {
-        if (effectiveMinRaise > 0 && raiseAmount < effectiveMinRaise) {
-            setRaiseAmount(effectiveMinRaise);
+        if (maxRaisePossible > 0) {
+            const clamped = Math.max(minRaisePossible, Math.min(maxRaisePossible, raiseAmount || minRaisePossible));
+            if (clamped !== raiseAmount) {
+                setRaiseAmount(clamped);
+            }
         }
-    }, [effectiveMinRaise]);
+    }, [minRaisePossible, maxRaisePossible]);
 
     const activeModifiers: ActiveModifierInfo[] = useMemo(() => {
         return (gameState?.modifiers ?? []).map((m: any, idx: number) => parseModifier(m, idx));
@@ -1474,20 +1552,23 @@ export function Game() {
         const isRoundActive = roundNameRef.current && roundNameRef.current !== "room" && roundNameRef.current !== "preround" && roundNameRef.current !== "showdown";
         const turnPlayerId = activeTurnPlayerIdRef.current;
 
-        if (!isRoundActive || turnPlayerId === null || turnPlayerId === undefined || !config?.turnTimeout) {
+        if (!isRoundActive || turnPlayerId === null || turnPlayerId === undefined || !config?.turnTimeout || !turnDeadlineRef.current) {
             setTurnTimeRemaining(null);
             return;
         }
 
-        const maxSeconds = config.turnTimeout;
-
         const updateTimer = () => {
-            if (!turnStartTimeRef.current) {
-                setTurnTimeRemaining(maxSeconds);
+            if (!turnDeadlineRef.current) {
+                setTurnTimeRemaining(null);
+                if (turnTimerIntervalRef.current) {
+                    clearInterval(turnTimerIntervalRef.current);
+                    turnTimerIntervalRef.current = null;
+                }
                 return;
             }
-            const elapsedSeconds = Math.floor((Date.now() - turnStartTimeRef.current) / 1000);
-            const remaining = Math.max(0, maxSeconds - elapsedSeconds);
+
+            const remainingMs = turnDeadlineRef.current - Date.now();
+            const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
             setTurnTimeRemaining(remaining);
 
             if (remaining <= 0 && turnTimerIntervalRef.current) {
@@ -1497,7 +1578,7 @@ export function Game() {
         };
 
         updateTimer();
-        turnTimerIntervalRef.current = setInterval(updateTimer, 200);
+        turnTimerIntervalRef.current = setInterval(updateTimer, 50);
 
         return () => {
             if (turnTimerIntervalRef.current) {
@@ -1543,7 +1624,7 @@ export function Game() {
 
                     {showTurnTimerOverlay && (
                         <div className={styles.timeOverlay}>
-                            <div className={styles.timeText}>
+                            <div key={turnTimeRemaining} className={styles.timeText}>
                                 {turnTimeRemaining}
                             </div>
                         </div>
@@ -1646,9 +1727,12 @@ export function Game() {
 
                     const lobbyInfo = lobbyPlayers.find(lp => lp.id === p.id);
                     const isMe = p.id === myId;
-                    const borderColour = (p.isTurn && gameState?.roundName !== "room") ? "var(--input-focus-colour)" : boxBorderColour;
-
                     const isSelectedTarget = selectedSpecialTarget === p.id;
+                    const borderColour = isSelectedTarget
+                        ? "var(--input-focus-colour)"
+                        : (p.isTurn && gameState?.roundName !== "room")
+                            ? "var(--input-focus-colour)"
+                            : boxBorderColour;
                     const selectedSpecialInfo = selectedSpecialCardValue ? getSpecialCardInfo(selectedSpecialCardValue) : null;
                     const canTargetPlayer = (selectedSpecialInfo?.target === "other" || selectedSpecialInfo?.target === "otherCard") && p.id !== myId && !p.folded;
 
@@ -1888,38 +1972,43 @@ export function Game() {
                                 </div>
                             ) : (
                                 <div className={styles.turnBar}>
-                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", "call")}>
+                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => sendPlayerMove("call")}>
                                         <PixelBox innerClassName={`${styles.btnInner} ${currentBetToCall > 0 ? styles.btnPrimary : ''}`} borderColour={boxBorderColour}>
-                                            {currentBetToCall <= 0 ? "Check" : `Call (${currentBetToCall})`}
+                                            {currentBetToCall <= 0 ? "Check" : (actualCallCost <= 0 ? "Call" : `Call (${actualCallCost})`)}
                                         </PixelBox>
                                     </button>
 
-                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", `raise ${raiseAmount}`)}>
-                                        <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                            Raise
-                                        </PixelBox>
-                                    </button>
+                                    {canRaise && (
+                                        <>
+                                            <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => sendPlayerMove(`raise ${raiseAmount}`)}>
+                                                <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
+                                                    Raise
+                                                </PixelBox>
+                                            </button>
 
-                                    <NumberSetting
-                                        disabled={meInGame.acted}
-                                        label=''
-                                        range=''
-                                        min={effectiveMinRaise}
-                                        max={meInGame?.chips ?? 1000}
-                                        step={effectiveMinRaise}
-                                        value={raiseAmount}
-                                        onChange={(e) => {
-                                            if (e === "") {
-                                                setRaiseAmount(0);
-                                            } else {
-                                                setRaiseAmount(typeof e === 'number' ? e : parseInt(e) || 0);
-                                            }
-                                        }}
-                                        styles={styles}
-                                        boxBorderColour={boxBorderColour}
-                                    />
+                                            <NumberSetting
+                                                disabled={meInGame.acted}
+                                                label=''
+                                                range=''
+                                                min={minRaisePossible}
+                                                max={maxRaisePossible}
+                                                step={effectiveMinRaise}
+                                                value={raiseAmount}
+                                                onChange={(e) => {
+                                                    if (e === "") {
+                                                        setRaiseAmount(0);
+                                                    } else {
+                                                        const val = typeof e === 'number' ? e : parseInt(e) || 0;
+                                                        setRaiseAmount(Math.min(val, maxRaisePossible));
+                                                    }
+                                                }}
+                                                styles={styles}
+                                                boxBorderColour={boxBorderColour}
+                                            />
+                                        </>
+                                    )}
 
-                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => socket?.emit("playerMove", "fold")}>
+                                    <button type="button" className={styles.btnWrapper} disabled={meInGame.acted || isAnimating} onClick={() => sendPlayerMove("fold")}>
                                         <PixelBox innerClassName={`${styles.btnInner} ${styles.btnDanger}`} borderColour={boxBorderColour}>
                                             Fold
                                         </PixelBox>

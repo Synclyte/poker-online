@@ -34,65 +34,65 @@ export function parseCardString(cardStr: string) {
 export const specialCardInfo: Record<string, SpecialCardInfo> = {
     ReplaceCardSelf: {
         label: "Replace Hole Card",
-        description: "Replace a selected hole card with a new card from the deck",
+        description: "Replaces a selected hole card with a random new card, drawn from the deck",
         target: "selfCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_replace_card_self.png",
     },
     DrawCardSelf: {
         label: "Draw Hole Card",
-        description: "Draw an additional hole card from the deck. Visible to opponents",
+        description: "Draws an additional hole card from the deck. This card is visible to opponents",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_card_self.png",
     },
     DrawCardCommunity: {
         label: "Draw Community Card",
-        description: "Draw an additional community card from the deck",
+        description: "Draws an additional card from the deck, adding it to community cards",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_card_community.png",
     },
     ReplaceCardCommunity: {
         label: "Replace Community",
-        description: "Replace a chosen community card with a new card from the deck",
+        description: "Replace a selected community card with a new card from the deck",
         target: "communityCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_replace_card_community.png",
     },
     RemoveCardCommunity: {
         label: "Remove Community",
-        description: "Remove a chosen community card",
+        description: "Removes a selected community card",
         target: "communityCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_remove_card_community.png",
     },
     RevealOpponentCard: {
         label: "Reveal Card",
-        description: "Reveal a chosen hole card of a selected opponent to you",
+        description: "Reveals a chosen hole card of a selected opponent to you until the end of the current hand",
         target: "otherCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_reveal_opponent_card.png",
     },
     WithdrawBet: {
         label: "Withdraw Bet",
-        description: "Fold and recover your raw current round bet",
+        description: "Fold recovering your bet from the pot",
         target: "none",
         imgSrc: "/src/assets/special/special_withdraw_bet.png",
     },
     AnteUp: {
         label: "Ante Up",
-        description: "Permanently double the blind and miniumum raise costs. Grants a Chip Boost special card on use",
+        description: "Doubles the blind and minimum raise costs permanently. Grants a Chip Boost special card on use",
         target: "none",
         imgSrc: "/src/assets/special/special_ante_up.png",
     },
     PotMult: {
         label: "Pot Multiplier",
-        description: "Multiply the blind for the entirety of the current hand",
+        description: "Multiplies player winnings from the pot this hand by 1.4x",
         target: "none",
         imgSrc: "/src/assets/special/special_pot_mult.png",
     },
     RaiseBlock: {
         label: "Raise Block",
-        description: "Prevent all raises until your next turn",
+        description: "Prevents raises by all players until your next turn",
         target: "none",
         imgSrc: "/src/assets/special/special_raise_block.png",
     },
@@ -110,127 +110,127 @@ export const specialCardInfo: Record<string, SpecialCardInfo> = {
     },
     ChipGamble: {
         label: "Chip Gamble",
-        description: "Has a chance to give chips proportional to blind cost or remove all chips. Failure chance increases with every use",
+        description: "When used, has a chance to give a significant number of chips. If it fails, lose half of your chips and fold",
         target: "none",
         imgSrc: "/src/assets/special/special_chip_gamble.png",
     },
     Blackjack: {
         label: "Blackjack",
-        description: "Use Blackjack scoring for the current hand. Provides a Draw Hole Card special card to all players on use",
+        description: "Changes scoring system to Blackjack for the current hand. Provides a Draw Hole Card special card to all players on use",
         target: "none",
         imgSrc: "/src/assets/special/special_blackjack.png",
     },
     DrawHeart: {
         label: "Draw Heart",
-        description: "Force the next drawn community card to have the Heart suit",
+        description: "Forces the next drawn community card to have the Heart suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_heart.png",
     },
     DrawSpade: {
         label: "Draw Spade",
-        description: "Force the next drawn community card to have the Spade suit",
+        description: "Forces the next drawn community card to have the Spade suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_spade.png",
     },
     DrawDiamond: {
         label: "Draw Diamond",
-        description: "Force the next drawn community card to have the Diamond suit",
+        description: "Forces the next drawn community card to have the Diamond suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_diamond.png",
     },
     DrawClub: {
         label: "Draw Club",
-        description: "Force the next drawn community card to have the Club suit",
+        description: "Forces the next drawn community card to have the Club suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_club.png",
     },
     DrawFace: {
         label: "Draw Face",
-        description: "Force the next drawn community card to be a Face card",
+        description: "Forces the next drawn community card to be a face card",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_face.png",
     },
     DrawHigh: {
         label: "Draw High",
-        description: "Force the next community card to be a 10 or above",
+        description: "Forces the next community card to be a 10 or above",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_high.png",
     },
     DrawLow: {
         label: "Draw Low",
-        description: "Force the next community card to be a 5 or below",
+        description: "Forces the next community card to be a 5 or below",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_low.png",
     },
     InvalidateFlush: {
         label: "No Flushes",
-        description: "Flushes do not score",
+        description: "Invalidates Flushes for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_flush.png",
     },
     InvalidateStraight: {
         label: "No Straights",
-        description: "Straights do not score",
+        description: "Invalidates Straights for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_straight.png",
     },
     InvalidateThreeOfAKind: {
         label: "No Three of a Kind",
-        description: "Three of a Kinds do not score",
+        description: "Invalidates Three of a Kinds for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_three_of_a_kind.png",
     },
     InvalidateTwoPair: {
         label: "No Two Pair",
-        description: "Two Pairs do not score",
+        description: "Invalidates Two Pairs for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_two_pair.png",
     },
     InvalidateFullHouse: {
         label: "No Full House",
-        description: "Full houses do not score",
+        description: "Invalidates Full Houses for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_full_house.png",
     },
     Special: {
         label: "Special",
-        description: "Draw multiple special cards. Can exceed the card limit",
+        description: "Secret - small chance to obtain when using a special card. Gives multiple special cards on use, exceeding the typical special card limit",
         target: "none",
         imgSrc: "/src/assets/special/special_special.png",
     },
     DrawHigherThanLast: {
         label: "Draw Higher",
-        description: "Force the next drawn community card to have a rank equal to or higher than the previous draw",
+        description: "Forces the next drawn community card to have a rank equal to or higher than the previous draw",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_higher_than_last.png",
     },
     DrawLowerThanLast: {
         label: "Draw Lower",
-        description: "Force the next drawn community card to have a rank equal to or lower than the previous draw",
+        description: "Forces the next drawn community card to have a rank equal to or lower than the previous draw",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_lower_than_last.png",
     },
     DrawSameSuitAsLast: {
         label: "Draw Same Suit",
-        description: "Force the next drawn community card to be the same suit as the previous draw",
+        description: "Forces the next drawn community card to be the same suit as the previous draw",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_same_suit_as_last.png",
     },
     Discard: {
         label: "Discard",
-        description: "Prevent any more community cards from being drawn",
+        description: "Secret - small chance to obtain when discarding a special card. Prevents any more community cards from being drawn for the rest of this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_discard.png",
     },
     HandSwap: {
         label: "Hand Swap",
-        description: "Swap hands with an opponent. Fails, consuming this card, if their hand is currently better",
+        description: "Swaps your hand with that of a chosen opponent. Fails if their hand is currently better than yours",
         target: "other",
         imgSrc: "/src/assets/special/special_hand_swap.png",
     },
     Joker: {
         label: "Joker",
-        description: "Convert a selected community card into a Joker",
+        description: "Converts a selected community card into a Joker",
         target: "communityCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_joker.png",
@@ -268,7 +268,7 @@ export function getSpecialCardInfo(
         const boostChips = Math.round(bSize * aMult * 2.5);
         finalInfo = {
             ...finalInfo,
-            description: `Gain +${boostChips} chips, scaling with blind cost`,
+            description: `Gain +${boostChips} chips on use, scaling with blind cost`,
         };
     } else if (cardStr.toLowerCase().includes("chipgamble")) {
         const gambleChips = Math.round(bSize * aMult * 7.5);
@@ -276,7 +276,7 @@ export function getSpecialCardInfo(
         const successChance = Math.round(chance * 100);
         finalInfo = {
             ...finalInfo,
-            description: `${successChance}% chance to gain +${gambleChips} chips, scaling with blind cost. Fold and lose half of your chips on failure, with failure chance increasing with every use`,
+            description: `Results in one of two outcomes. ${successChance}% chance to gain +${gambleChips} chips, scaling with blind cost. ${100 - successChance}% chance to force you to fold and lose half of your chips`,
         };
     }
 
@@ -402,57 +402,57 @@ export function parseModifier(mod: any, index: number): ActiveModifierInfo {
             switch (ruleStr) {
                 case "Heart":
                     name = "Draw Heart";
-                    description = "Community card draws forced to be Hearts";
+                    description = "Forces community card draws to have the Heart suit";
                     typeKey = "draw_heart";
                     break;
                 case "Spade":
                     name = "Draw Spade";
-                    description = "Community card draws forced to be Spades";
+                    description = "Forces community card draws to have the Spade suit";
                     typeKey = "draw_spade";
                     break;
                 case "Diamond":
                     name = "Draw Diamond";
-                    description = "Community card draws forced to be Diamonds";
+                    description = "Forces community card draws to have the Diamond suit";
                     typeKey = "draw_diamond";
                     break;
                 case "Club":
                     name = "Draw Club";
-                    description = "Community card draws forced to be Clubs";
+                    description = "Forces community card draws to have the Club suit";
                     typeKey = "draw_club";
                     break;
                 case "Face":
                     name = "Draw Face Card";
-                    description = "Community card draws forced to be Face cards";
+                    description = "Forces community card draws to be face cards (Jack, Queen, King)";
                     typeKey = "draw_face";
                     break;
                 case "High":
                     name = "Draw High Card";
-                    description = "Community card draws forced to be 10 or higher";
+                    description = "Forces community card draws to be 10 or higher (10, Jack, Queen, King, Ace)";
                     typeKey = "draw_high";
                     break;
                 case "Low":
                     name = "Draw Low Card";
-                    description = "Community card draws forced to be 5 or lower";
+                    description = "Forces community card draws to be 5 or lower (5, 4, 3, 2, Ace)";
                     typeKey = "draw_low";
                     break;
                 case "HigherThanLast":
                     name = "Draw Higher";
-                    description = "Community card draws forced to be rank equal or higher than previous draw";
+                    description = "Forces community card draws to have a rank equal to or higher than the previous draw";
                     typeKey = "draw_higher_than_last";
                     break;
                 case "LowerThanLast":
                     name = "Draw Lower";
-                    description = "Community card draws forced to be rank equal or lower than previous draw";
+                    description = "Forces community card draws to have a rank equal to or lower than the previous draw";
                     typeKey = "draw_lower_than_last";
                     break;
                 case "SameSuitAsLast":
                     name = "Draw Same Suit";
-                    description = "Community card draws forced to be same suit as previous draw";
+                    description = "Forces community card draws to have the same suit as the previous draw";
                     typeKey = "draw_same_suit_as_last";
                     break;
                 default:
                     name = `Draw ${ruleStr}`;
-                    description = `Community card draws forced to follow ${ruleStr} rule`;
+                    description = `Community card draws follow the ${ruleStr} rule`;
                     typeKey = `draw_${ruleStr.toLowerCase()}`;
                     break;
             }

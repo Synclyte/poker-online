@@ -423,9 +423,7 @@ impl Hand {
             return Hand { hand_type: HandType::None, cards: vec![], spare: vec![] };
         }
         for (hand_type, hand_fn) in hand_fns {
-            if invalidated_hands.iter().all(
-                |invalid_hand| invalid_hand != hand_type) && let Some(hand) = hand_fn(cards, hand_size) 
-            {
+            if invalidated_hands.iter().all(|invalid_hand| invalid_hand != hand_type) && let Some(hand) = hand_fn(cards, hand_size) {
                 return hand;
             }
         }
@@ -526,8 +524,8 @@ pub(crate) fn get_representation(
     cards: &Vec<ExpandedCard>, 
     representation: Vec<usize>, 
     suit: Option<Suit>, 
-    hand_size: usize) 
-    -> Option<(Vec<Vec<ExpandedCard>>, Vec<ExpandedCard>)> 
+    hand_size: usize
+    ) -> Option<(Vec<Vec<ExpandedCard>>, Vec<ExpandedCard>)> 
 {
     let cards_required = representation.iter().sum::<usize>();
     if hand_size < cards_required || cards.len() < cards_required {

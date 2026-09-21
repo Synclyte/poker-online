@@ -94,16 +94,23 @@ impl AI {
 
                 if game.ctx.rng.random_bool(p_fold) {
                     actions.push(Action::Fold);
-                } else if game.ctx.rng.random_bool(p_call) {
-                    self.total_bet += (game.bet - player.round_bet).min(player.chips);
+                } else if game.ctx.rng.random_bool(p_call) || game.is_player_at_max_bet(player) {
+                    let maybe_max_bet = game.get_current_max_bet();
+                    let max_hand_capacity = if let Some(max_bet) = maybe_max_bet { (max_bet - player.total_bet).max(0) } else { i32::MAX };
+                    self.total_bet += (game.bet - player.round_bet).max(0).min(player.chips).min(max_hand_capacity);
                     self.budget = self.calculate_round_budget(player, game, hand_strength);
                     actions.push(Action::Call);
                 } else {
+                    let maybe_max_bet = game.get_current_max_bet();
+                    let max_hand_capacity = if let Some(max_bet) = maybe_max_bet { (max_bet - player.total_bet).max(0) } else { i32::MAX };
+                    let call_portion = (game.bet - player.round_bet).max(0).min(player.chips).min(max_hand_capacity);
+                    let max_cap_raise = (max_hand_capacity - call_portion).max(0);
+
                     let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
-                    let min_r = effective_min.min(player.chips);
+                    let min_r = effective_min.min(player.chips).min(max_cap_raise);
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.1 * self.greed * player.chips as f64) as i32;
-                    let adjusted_raise = raise_amount.max(min_r).min(player.chips);
-                    if adjusted_raise >= min_r {
+                    let adjusted_raise = raise_amount.max(min_r).min(player.chips).min(max_cap_raise);
+                    if adjusted_raise > 0 && (adjusted_raise >= min_r || adjusted_raise == max_cap_raise) {
                         self.total_bet += adjusted_raise + (game.bet - player.round_bet).min(player.chips);
                         let upper_budget = player.chips.max(1);
                         self.budget = self.calculate_round_budget(player, game, hand_strength).clamp((self.budget + raise_amount).min(upper_budget), upper_budget);
@@ -121,12 +128,17 @@ impl AI {
             let budget_used = if self.budget > 0 { (self.total_bet as f64 / self.budget as f64).clamp(0.0, 1.0) } else { 0.0 };
             let p_raise = (fear_greed_ratio * hand_strength * 2.0 * (1.0 - budget_used)).clamp(0.0, 1.0);
 
-            if !p_raise.is_nan() && game.ctx.rng.random_bool(p_raise) {
+            if !p_raise.is_nan() && game.ctx.rng.random_bool(p_raise) && !game.is_player_at_max_bet(player) {
+                let maybe_max_bet = game.get_current_max_bet();
+                let max_hand_capacity = if let Some(max_bet) = maybe_max_bet { (max_bet - player.total_bet).max(0) } else { i32::MAX };
+                let call_portion = (game.bet - player.round_bet).max(0).min(player.chips).min(max_hand_capacity);
+                let max_cap_raise = (max_hand_capacity - call_portion).max(0);
+
                 let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
-                let min_r = effective_min.min(player.chips);
+                let min_r = effective_min.min(player.chips).min(max_cap_raise);
                 let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
-                let adjusted_raise = raise_amount.max(min_r).min(self.budget - self.total_bet).min(player.chips);
-                if adjusted_raise >= min_r {
+                let adjusted_raise = raise_amount.max(min_r).min(self.budget - self.total_bet).min(player.chips).min(max_cap_raise);
+                if adjusted_raise > 0 && (adjusted_raise >= min_r || adjusted_raise == max_cap_raise) {
                     actions.push(Action::Raise { amount: adjusted_raise });
                 } else {
                     actions.push(Action::Call);

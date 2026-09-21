@@ -234,7 +234,7 @@ impl DrawRule {
             DrawRule::Club => Box::new(|c| c.card().suit == Suit::Clubs || matches!(c, ExpandedCard::Joker(_))),
             DrawRule::Face => Box::new(|c| matches!(c.card().rank, Rank::Jack | Rank::Queen | Rank::King) || matches!(c, ExpandedCard::Joker(_))),
             DrawRule::High => Box::new(|c| c.card().rank >= Rank::Ten || matches!(c, ExpandedCard::Joker(_))),
-            DrawRule::Low => Box::new(|c| c.card().rank <= Rank::Five || matches!(c, ExpandedCard::Joker(_))),
+            DrawRule::Low => Box::new(|c| c.card().rank <= Rank::Five || c.card().rank == Rank::Ace || matches!(c, ExpandedCard::Joker(_))),
             DrawRule::HigherThanLast => {
                 let last_rank = game.community.last().map_or(Rank::None, |community| community.card().rank);
                 Box::new(move |c| c.card().rank >= last_rank || matches!(c, ExpandedCard::Joker(_)))

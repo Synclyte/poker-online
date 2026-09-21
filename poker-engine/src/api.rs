@@ -1,6 +1,4 @@
-use crate::{
-    Action, ErrorType, Game, GameConfig, GameError, MoveEvent, PlayerType, Round, SpecialCard, poker::{ExpandedCard, Hand}, special::{self, Modifier},
-};
+use crate::{Action, ErrorType, Game, GameConfig, GameError, MoveEvent, PlayerType, Round, poker::{ExpandedCard, Hand}, special::{self, Modifier}};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -66,6 +64,7 @@ pub(crate) struct GameState {
     pub modifiers: Vec<Modifier>,
     pub modifier_vars: ModifierDisplayValues,
     pub games_played: i32,
+    pub max_bet: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -241,5 +240,6 @@ pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
             gamble_success_chance: game.modifiers.vars.gamble_success_chance,
         },
         games_played: game.games_played,
+        max_bet: game.get_current_max_bet(),
     }
 }

@@ -11,6 +11,7 @@ export interface NumberSettingProps {
     max: number;
     step?: number;
     disabled?: boolean;
+    formatValue?: (val: number | '') => string;
     onChange: (val: number | '') => void;
     styles: Record<string, string>;
     boxBorderColour: string;
@@ -24,6 +25,7 @@ export const NumberSetting = ({
     max,
     step = 1,
     disabled = false,
+    formatValue,
     onChange,
     styles,
     boxBorderColour
@@ -90,11 +92,18 @@ export const NumberSetting = ({
                         </button>
                     )}
                     <input
-                        type="number" step={step} min={min} max={max}
+                        type={formatValue ? "text" : "number"} step={step} min={min} max={max}
                         className={`${styles.formControl} ${baseStyles.capacityValue}`}
-                        value={value}
+                        value={formatValue ? formatValue(value) : value}
                         disabled={disabled}
-                        onChange={(e) => onChange(e.target.value === '' ? '' : parseInt(e.target.value))}
+                        onChange={(e) => {
+                            if (formatValue) {
+                                const digits = e.target.value.replace(/[^0-9]/g, '');
+                                onChange(digits === '' ? '' : parseInt(digits));
+                            } else {
+                                onChange(e.target.value === '' ? '' : parseInt(e.target.value));
+                            }
+                        }}
                     />
                     {!disabled && (
                         <button
