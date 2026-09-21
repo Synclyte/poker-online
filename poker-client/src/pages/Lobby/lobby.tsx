@@ -121,12 +121,14 @@ export function Lobby() {
         const handleError = (data: string) => showToast(`${data}`, "error");
         const handleInfo = (data: string) => showToast(`${data}`, "info");
 
-        const handleHostPromote = (data: { playerId: number }) => {
-            if (data.playerId === myIdRef.current) {
+        const handleHostPromote = (data: { playerId?: number; hostId?: number }) => {
+            const pid = data.playerId ?? data.hostId;
+            if (pid === undefined) return;
+            if (pid === myIdRef.current) {
                 showToast("You have been promoted to host", "info");
             } else {
-                const player = players.find(p => p.id === data.playerId);
-                if (!player) showToast(`Player ${data.playerId} was promoted to host`, "info");
+                const player = players.find(p => p.id === pid);
+                if (!player) showToast(`Player ${pid} was promoted to host`, "info");
                 else showToast(`${player.name} was promoted to host`, "info");
             }
         };

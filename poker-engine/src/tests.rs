@@ -14,6 +14,7 @@ mod tests {
         use crate::ai::AIType;
         use crate::{Action, ConfigPlayer, DeckType, Game, GameConfig, GameError, MoveAction, MoveEvent, PlayerType, Round, SpecialCard};
         use crate::poker::*;
+        use crate::special::*;
 
         fn get_configured_started_game(player_count: usize, bot_count: usize) -> Game {
             let mut game = Game::new();
@@ -719,6 +720,64 @@ mod tests {
             assert_eq!(game.round, Round::Room, "Game should end when all humans are eliminated");
             assert_eq!(game.players[1].chips, 1200, "Bot 1 should retain its chip balance");
             assert_eq!(game.players[2].chips, 800, "Bot 2 should retain its chip balance");
+        }
+
+        #[test]
+        fn test_all_in_player_with_specials_advances_turn_on_call() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            // set player 0 to 0 chips, forcing an all in, and give them a special card
+            game.players[p0_idx].chips = 0;
+            game.players[p0_idx].special_cards.push(SpecialCard::ChipBoost);
+
+            // player 0 calls
+            let result = game.player_move(p0_id, Action::Call);
+            assert!(result.is_ok(), "Game should not stall on all in player move");
+
+            // turn should advance correctly
+            let next_turn_id = game.get_current_turn_player_id();
+            assert_ne!(next_turn_id, p0_id, "Turn must advance past all in player after they make a move");
+        }
+
+        #[test]
+        fn test_reveal_opponent_card_cleans_up_on_new_hand() {
+            let mut game = get_configured_started_game(2, 0);
+
+            // forces player 1 to see player 0s first hole card through modifying visibility
+            game.players[0].card_visibility[0].push(1);
+
+            // start new hand
+            let mut events = Vec::new();
+            game.start_new_hand(&mut events);
+
+            // check that player 1 can no longer see player 0s card
+            assert!(game.players[0].card_visibility[0].is_empty(), "Card visibility must be cleared between hands");
+        }
+
+        #[test]
+        fn test_special_card_ignores_limit_when_specified() {
+            let mut game = get_configured_started_game(2, 0);
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            // fill player 0s special cards
+            let limit = game.ctx.special_card_limit;
+            game.players[p0_idx].special_cards = vec![SpecialCard::ChipBoost; limit];
+
+            let mut events = Vec::new();
+            // ensure that player 0 cannot receive any more special cards through typical draw
+            let mut limit_ignored = false;
+            let err_res = give_special_card(SpecialCard::DrawCardSelf, 1, limit_ignored, p0_id, &mut game, &mut events);
+            assert!(err_res.is_err(), "Should respect limit when ignore_limit is false");
+
+            // but is able to when limit is ignored
+            limit_ignored = true;
+            let ok_res = give_special_card(SpecialCard::DrawCardSelf, 2, limit_ignored, p0_id, &mut game, &mut events);
+            assert!(ok_res.is_ok(), "Should exceed limit when ignore_limit is true");
+            assert_eq!(game.players[p0_idx].special_cards.len(), limit + 2);
         }
     }
 

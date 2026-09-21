@@ -356,7 +356,7 @@ function assignNewHost(roomId: string, room: RoomData) {
         if (sessionEntry) {
             room.roomHostSession = sessionEntry[0];
             room.players.forEach(p => p.isHost = (p.id === newHostPlayer.id));
-            io.to(roomId).emit("hostPromote", { hostId: newHostPlayer.id });
+            io.to(roomId).emit("hostPromote", { playerId: newHostPlayer.id, hostId: newHostPlayer.id });
         }
     }
 }
@@ -447,6 +447,9 @@ io.on("connection", (socket: Socket) => {
                 try {
                     const currentRound = room.game.get_round();
 
+                    const discPlayer = room.players.find(p => p.id === session.playerId);
+                    const discPlayerName = discPlayer?.name || (session.playerId !== undefined ? `Player ${session.playerId}` : "A player");
+
                     if (currentRound !== "room" && currentRound !== "preround") {
                         let response = JSON.parse(room.game.toggle_id_with_bot(session.playerId, true));
                         if (isError(response)) {
@@ -464,7 +467,7 @@ io.on("connection", (socket: Socket) => {
 
                     room.sessionTokens = room.sessionTokens.filter((token) => token !== sessionToken);
 
-                    socket.to(session.roomId).emit("info", `Player ${session.playerId} disconnected`);
+                    socket.to(session.roomId).emit("info", `${discPlayerName} disconnected`);
                     broadcastLobbyUpdate(room);
 
                     if (room.roomHostSession === sessionToken) assignNewHost(session.roomId, room);
@@ -795,7 +798,9 @@ io.on("connection", (socket: Socket) => {
         socket.emit("joinSuccess", { roomId, sessionToken });
         socket.join(roomId);
 
-        socket.to(roomId).emit("info", `Player ${newId} joined the game`);
+        const joinedPlayer = room.players.find(p => p.id === newId);
+        const joinedPlayerName = joinedPlayer?.name || `Player ${newId}`;
+        socket.to(roomId).emit("info", `${joinedPlayerName} joined the game`);
 
         broadcastLobbyUpdate(room);
     });
@@ -812,6 +817,9 @@ io.on("connection", (socket: Socket) => {
 
         adjustConnections(room, -1);
 
+        const leavingPlayer = room.players.find(p => p.id === session.playerId);
+        const leavingPlayerName = leavingPlayer?.name || (session.playerId !== undefined ? `Player ${session.playerId}` : "A player");
+
         room.sessionTokens = room.sessionTokens.filter((token) => token !== sessionToken);
         room.players = room.players.filter(p => p.id !== session.playerId);
 
@@ -824,7 +832,7 @@ io.on("connection", (socket: Socket) => {
 
         if (room.roomHostSession === sessionToken) assignNewHost(session.roomId, room);
 
-        socket.to(session.roomId).emit("info", `Player ${session.playerId} left the game`);
+        socket.to(session.roomId).emit("info", `${leavingPlayerName} left the game`);
         try {
             broadcastGameState(room);
         } catch (e) { }

@@ -741,10 +741,8 @@ impl Game {
                         break;
                     }
                 }
-            } else if current_player.folded || (current_player.chips == 0 && !can_play_specials) || current_player.round_bet == self.bet {
-                self.advance_turn_index();
             } else {
-                break;    
+                self.advance_turn_index();
             }          
         }
     }
@@ -1066,6 +1064,7 @@ impl Game {
         for p in self.players.iter_mut() {
             // reset player params
             p.cards.clear();
+            p.card_visibility.clear();
             p.round_bet = 0;
             p.total_bet = 0;
             if p.chips == 0 {

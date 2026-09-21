@@ -1765,6 +1765,7 @@ export function Game() {
                     <div className={styles.specialCardBar}>
                         {(() => {
                             const limit = config?.specialCardLimit ?? 0;
+                            const displayLimit = Math.max(limit, meInGame.specialCards.length);
 
                             return (
                                 <PixelBox
@@ -1779,7 +1780,7 @@ export function Game() {
                                         initialSlotLimit={limit}
                                         containerClassName={styles.specialCardHand}
                                         containerStyle={{
-                                            width: `calc(${limit} * var(--card-slot-width) + (${limit} - 1) * var(--card-gap))`
+                                            width: `calc(${displayLimit} * var(--card-slot-width) + (${displayLimit} - 1) * var(--card-gap))`
                                         }}
                                         renderCard={(card, index) => {
                                             const isSelected = selectedSpecialCardIndex === index;

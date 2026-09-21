@@ -303,9 +303,7 @@ impl Modifier {
                 if let Ok(idx) = game.get_player_index(target_id) {
                     let player = &mut game.players[idx];
                     if let Some(vis) = player.card_visibility.get_mut(card_index) {
-                        if !vis.contains(&viewer_id) {
-                            vis.push(viewer_id);
-                        }
+                        vis.retain(|&id| id != viewer_id);
                     }
                 }
             },
@@ -908,13 +906,13 @@ pub(crate) fn give_special_card(special_card: SpecialCard, count: usize, ignore_
         return Ok(())
     }
 
-    if game.players[p_id].special_cards.len() == game.ctx.special_card_limit {
+    if !ignore_limit && game.players[p_id].special_cards.len() >= game.ctx.special_card_limit {
         return Err(GameError::SpecialCardsFull);
     }
 
     let mut given_cards = 0;
     for _ in 0..count {
-        if game.players[p_id].special_cards.len() >= game.ctx.special_card_limit && !ignore_limit {
+        if !ignore_limit && game.players[p_id].special_cards.len() >= game.ctx.special_card_limit {
             break;
         } else {
             game.players[p_id].special_cards.push(special_card);
@@ -929,7 +927,7 @@ pub(crate) fn give_special_card(special_card: SpecialCard, count: usize, ignore_
     });
 
 
-    if given_cards < count {
+    if !ignore_limit && given_cards < count {
         return Err(GameError::SpecialCardsFull);
     }
 
