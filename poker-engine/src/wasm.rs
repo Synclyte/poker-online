@@ -70,6 +70,25 @@ impl GameAPI {
         }
     }
 
+    pub fn pick_winner_draft(&mut self, player_id: i32, choice_index: i32) -> String {
+        let result = (|| {
+            let player_id = api::parse_player_id(player_id)?;
+            let choice_index = usize::try_from(choice_index).map_err(|_| GameError::CardIndexInvalid)?;
+            let events = self.game.pick_winner_draft(player_id, choice_index)?;
+            Ok::<_, GameError>((player_id, events))
+        })();
+
+        match result {
+            Ok((viewer_id, events)) => api::move_result_json(&self.game, viewer_id, events),
+            Err(error) => api::error_json(&error),
+        }
+    }
+
+    pub fn timeout_winner_draft(&mut self) -> String {
+        let events = self.game.timeout_winner_draft();
+        api::move_result_json(&self.game, usize::MAX, events)
+    }
+
     pub fn queue_remove_player(&mut self, player_id: i32) -> String {
         let result = api::parse_player_id(player_id)
             .and_then(|player_id| self.game.queue_remove_player(player_id));

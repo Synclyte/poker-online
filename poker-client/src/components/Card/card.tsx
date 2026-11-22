@@ -292,11 +292,11 @@ export function buildSpecialCardFrontHTML(cardValue?: string | null): string {
 
     const smallMark = getAssetUrl("/src/assets/special/specialsmall.png");
     return `
-        <img style="top: 0; left: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
-        <img style="top: 0; right: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
+        <img style="top: 1px; left: 1px" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
+        <img style="top: 1px; right: 1px" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
         ${imgHtml}
-        <img style="bottom: 0; left: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
-        <img style="bottom: 0; right: 0" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
+        <img style="bottom: 1px; left: 1px" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
+        <img style="bottom: 1px; right: 1px" class="${styles.specialMark}" src="${smallMark}" draggable="false" />
     `.trim();
 }
 

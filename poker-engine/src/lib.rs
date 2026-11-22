@@ -48,7 +48,7 @@ impl fmt::Display for GameError {
         let message = match self {
             Self::InvalidConfig(reason) => return write!(f, "Failed to parse given config: {}", reason),
             Self::ConfigLocked => "Failed to apply config: round has already started",
-            Self::InvalidRound => "Action is not valid in the current round",
+            Self::InvalidRound => "Invalid action",
             Self::InvalidTurn => "Invalid turn order",
             Self::NoActiveTurnPlayer => "No active turn player",
             Self::UnknownPlayer => "Could not find player with specified id",
@@ -138,7 +138,7 @@ impl Player {
     }
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum Action {
     Raise { amount: i32 },
@@ -213,6 +213,7 @@ enum Round {
     Flop,
     Turn,
     River,
+    WinnerDraft,
     Showdown,
     GameEnd,
 }
@@ -225,6 +226,7 @@ impl fmt::Display for Round {
             Round::Flop => "flop",
             Round::Turn => "turn",
             Round::River => "river",
+            Round::WinnerDraft => "winnerdraft",
             Round::Showdown => "showdown",
             Round::GameEnd => "gameover",
         };
@@ -387,7 +389,15 @@ pub(crate) struct MoveEvent {
 #[derive(Serialize, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum MoveAction {
-    Action { action: Action },
+    Action {
+        action: Action,
+        #[serde(rename = "betDelta", skip_serializing_if = "Option::is_none")]
+        bet_delta: Option<i32>,
+        #[serde(rename = "roundBet", skip_serializing_if = "Option::is_none")]
+        round_bet: Option<i32>,
+        #[serde(rename = "totalBet", skip_serializing_if = "Option::is_none")]
+        total_bet: Option<i32>,
+    },
     DealHole { count: usize },
     DealCommunity { count: usize },
     DealSpecial { count: usize },
@@ -398,6 +408,7 @@ pub(crate) enum MoveAction {
     RevealCard { target_id: usize, card_index: usize },
     SwapBot,
     SwapHuman,
+    DraftSkippedFull,
 }
 
 pub struct Game {
@@ -415,6 +426,9 @@ pub struct Game {
     pub(crate) winning_hand_type: String,
     pub(crate) modifiers: RoundModifiers,
     pub(crate) winner_ids: Vec<usize>,
+    pub(crate) pending_drafts: Vec<WinnerDraft>,
+    pub(crate) rounds_since_ante_up: u32,
+    pub(crate) ante_up_drawn_this_hand: bool,
 }
 impl Game {
     /**
@@ -451,6 +465,9 @@ impl Game {
             winning_hand_type: String::new(),
             modifiers: RoundModifiers::default(),
             winner_ids: Vec::new(),
+            pending_drafts: Vec::new(),
+            rounds_since_ante_up: 0,
+            ante_up_drawn_this_hand: false,
         }
     }
 
@@ -577,6 +594,9 @@ impl Game {
         self.winning_hand_type.clear();
         self.dealer_index = 0;
         self.modifiers = RoundModifiers::default();
+        self.pending_drafts.clear();
+        self.rounds_since_ante_up = 0;
+        self.ante_up_drawn_this_hand = false;
 
         Ok(())
     }
@@ -588,6 +608,13 @@ impl Game {
         let mut events = Vec::new();
         match self.round {
             Round::Preround => self.start_new_hand(&mut events),
+            Round::WinnerDraft => {
+                events.extend(self.timeout_winner_draft());
+                self.end_hand();
+                if self.round != Round::GameEnd && self.round != Round::Room {
+                    self.start_new_hand(&mut events);
+                }
+            }
             Round::Showdown => {
                 self.end_hand();
                 if self.round != Round::GameEnd && self.round != Round::Room {
@@ -663,6 +690,11 @@ impl Game {
 
             self.turn_index %= self.players.len();
             self.dealer_index %= self.players.len();
+
+            self.pending_drafts.retain(|draft| draft.player_id != player_id);
+            if self.round == Round::WinnerDraft && self.pending_drafts.is_empty() {
+                self.round = Round::Showdown;
+            }
             Ok(())
         } else {
             Err(GameError::UnknownPlayer)
@@ -693,7 +725,17 @@ impl Game {
             let new_ai = AI::new(AIType::Safe);
             self.players[index].player_type = PlayerType::Computer(new_ai);
 
-            if self.turn_index == index && !self.players[index].folded && self.round >= Round::Preflop && self.round < Round::Showdown {
+            if self.round == Round::WinnerDraft {
+                if let Some(pos) = self.pending_drafts.iter().position(|d| d.player_id == pid) {
+                    let draft = self.pending_drafts.remove(pos);
+                    if let Some(&card) = draft.options.first() {
+                        self.grant_drafted_card(pid, card, &mut event_log);
+                    }
+                    if self.pending_drafts.is_empty() {
+                        self.round = Round::Showdown;
+                    }
+                }
+            } else if self.turn_index == index && !self.players[index].folded && self.round >= Round::Preflop && self.round < Round::Showdown {
                 self.advance_game_loop(&mut event_log);
             }
         } else {
@@ -720,7 +762,10 @@ impl Game {
      */
     fn advance_game_loop(&mut self, events: &mut Vec<MoveEvent>) {
         loop {
-            if self.round == Round::Room || self.round == Round::Preround {
+            if matches!(
+                self.round,
+                Round::Room | Round::Preround | Round::WinnerDraft | Round::Showdown | Round::GameEnd
+            ) {
                 break;
             }
 
@@ -728,7 +773,7 @@ impl Game {
             let unfolded_players: Vec<usize> = self.players.iter().filter(|p| !p.folded).map(|p| p.id).collect();
             if unfolded_players.len() <= 1 {
                 if let Some(&winner_id) = unfolded_players.first() {
-                    self.award_pot_to_single_winner(winner_id);
+                    self.award_pot_to_single_winner(winner_id, events);
                 }
                 break;
             }
@@ -736,7 +781,7 @@ impl Game {
             // otherwise, if the current round is now complete, advance the round
             if self.is_round_complete() {
                 self.advance_to_next_round(events);
-                if self.round == Round::Preround || self.round == Round::Showdown {
+                if matches!(self.round, Round::Preround | Round::WinnerDraft | Round::Showdown) {
                     break;
                 }
                 continue;
@@ -792,6 +837,10 @@ impl Game {
 
         let player_id = self.players[player_index].id;
         let mut action_events: Vec<MoveEvent> = Vec::new();
+        let mut logged_action = action.clone();
+        let mut bet_delta: Option<i32> = None;
+        let mut round_bet_after: Option<i32> = None;
+        let mut total_bet_after: Option<i32> = None;
 
         match action {
             Action::Fold => {
@@ -815,6 +864,10 @@ impl Game {
                 self.round_pool += call_amount;
                 p.acted = true;
                 p.turn_ended = true;
+
+                bet_delta = Some(call_amount);
+                round_bet_after = Some(p.round_bet);
+                total_bet_after = Some(p.total_bet);
             }
             Action::Raise { amount } => {
                 if self.modifiers.raises_blocked() {
@@ -843,6 +896,9 @@ impl Game {
                 let remaining_chips_for_raise = (p.chips - (self.bet - p.round_bet).max(0)).max(0);
                 let max_raise = remaining_chips_for_raise.min(remaining_raise_cap);
                 let true_raise = amount.min(max_raise);
+                if max_raise == 0 || true_raise <= 0 {
+                    return Err(GameError::InvalidAction);
+                }
                 let raise_cost = ((self.bet + true_raise) - p.round_bet).min(p.chips).min(max_hand_capacity);
 
                 let effective_min_raise = (self.ctx.min_raise as f64 * self.modifiers.vars.ante_multiplier) as i32;
@@ -859,6 +915,11 @@ impl Game {
                 p.total_bet += raise_cost;
                 self.round_pool += raise_cost;
                 self.bet = p.round_bet.max(self.bet);
+
+                logged_action = Action::Raise { amount: true_raise };
+                bet_delta = Some(raise_cost);
+                round_bet_after = Some(p.round_bet);
+                total_bet_after = Some(p.total_bet);
 
                 if true_raise > 0 {
                     for (i, other) in self.players.iter_mut().enumerate() {
@@ -903,7 +964,12 @@ impl Game {
 
         events.push(MoveEvent { 
             actor_id: Some(player_id), 
-            action: MoveAction::Action { action }, 
+            action: MoveAction::Action {
+                action: logged_action,
+                bet_delta,
+                round_bet: round_bet_after,
+                total_bet: total_bet_after,
+            }, 
             private: false 
         });
 
@@ -1033,11 +1099,11 @@ impl Game {
         match self.round {
             Round::Preflop => {
                 self.deal_community_cards(3, events);
+                self.deal_special_cards(1, events);
                 self.round = Round::Flop;
             }
             Round::Flop => {
                 self.deal_community_cards(1, events);
-                self.deal_special_cards(1, events);
                 self.round = Round::Turn;
             }
             Round::Turn => {
@@ -1046,7 +1112,7 @@ impl Game {
             }
             Round::River => {
                 self.round = Round::Showdown;
-                self.resolve_showdown();
+                self.resolve_showdown(events);
             }
             _ => {}
         }
@@ -1081,7 +1147,7 @@ impl Game {
         let bb = self.make_player_pay_blind(bb_index, blind_size);
 
         self.round_pool = sb + bb;
-        self.bet = bb;
+        self.bet = sb.max(bb);
         self.turn_index = end_index;
     }
 
@@ -1114,6 +1180,8 @@ impl Game {
         self.pots.clear();
         self.community.clear();
         self.winning_hand_type.clear();
+        self.pending_drafts.clear();
+        self.ante_up_drawn_this_hand = false;
 
         self.deck = self.ctx.deck_type.get_associated_deck();
         self.deck.shuffle(&mut self.ctx.rng);
@@ -1238,9 +1306,9 @@ impl Game {
     }
 
     /**
-     * Generic pot distribution function
+     * Generic pot distribution function. Returns the winner IDs of the main pot (first pot).
      */
-    fn distribute_pots<T: Ord>(&mut self, mut entries: Vec<(usize, T)>) {
+    fn distribute_pots<T: Ord>(&mut self, mut entries: Vec<(usize, T)>) -> Vec<usize> {
         // sort in descending order
         entries.sort_by(|(_, a), (_, b)| b.cmp(a));
 
@@ -1249,8 +1317,10 @@ impl Game {
             pot.amount = (pot.amount as f64 * self.modifiers.vars.pot_multiplier).round() as i32;
         }
 
+        let mut main_pot_winners = Vec::new();
+
         // iterates through all pots, finding winners for each and individually distributing chips
-        for pot in &self.pots {
+        for (pot_idx, pot) in self.pots.iter().enumerate() {
             let mut winners = Vec::new();
             if let Some(winning_entry) = entries.iter().find(|(id, _)| pot.players.contains(id)) {
                 let winning_hand = &winning_entry.1;
@@ -1259,6 +1329,10 @@ impl Game {
                         winners.push(*id);
                     }
                 }
+            }
+
+            if pot_idx == 0 {
+                main_pot_winners = winners.clone();
             }
 
             if !winners.is_empty() {
@@ -1275,14 +1349,19 @@ impl Game {
                 }
             }
         }
+
+        main_pot_winners
     }
 
-    fn resolve_showdown(&mut self) {
+    fn resolve_showdown(&mut self, events: &mut Vec<MoveEvent>) {
         self.process_pots();
+        let total_chips: i32 = self.players.iter().map(|p| p.chips).sum::<i32>()
+            + self.pots.iter().map(|p| p.amount).sum::<i32>();
+        let main_pot_amount = self.pots.first().map(|p| p.amount).unwrap_or(0);
 
         // this function structure allows for modifiers to overwrite the default scoring
         // so long as they can produce a Vec of Ord elements to sort players by
-        if self.modifiers.blackjack_active() {
+        let main_pot_winners = if self.modifiers.blackjack_active() {
             let scores: Vec<(usize, i32)> = self.players.iter()
                 .filter(|p| !p.folded)
                 .map(|p| (p.id, special::evaluate_blackjack_hand(&p.cards)))
@@ -1296,7 +1375,7 @@ impl Game {
                 };
             }
 
-            self.distribute_pots(scores);            
+            self.distribute_pots(scores)
         } else {
             let invalid_hands = self.modifiers.invalidated_hands();
             let hands: Vec<(usize, Hand)> = self.players.iter()
@@ -1310,15 +1389,19 @@ impl Game {
                 self.winning_hand_type = winning_hand.hand_type.to_string();
             }
 
-            self.distribute_pots(hands);
-        }
+            self.distribute_pots(hands)
+        };
 
         self.pots.clear();
         self.round_pool = 0;
+
+        self.prepare_winner_drafts(&main_pot_winners, main_pot_amount, total_chips, events);
     }
 
-    fn award_pot_to_single_winner(&mut self, winner_id: usize) {
+    fn award_pot_to_single_winner(&mut self, winner_id: usize, events: &mut Vec<MoveEvent>) {
         self.process_pots();
+        let total_chips: i32 = self.players.iter().map(|p| p.chips).sum::<i32>()
+            + self.pots.iter().map(|p| p.amount).sum::<i32>();
         let raw_pot: i32 = self.pots.iter().map(|p| p.amount).sum::<i32>();
         let total_pot = (raw_pot as f64 * self.modifiers.vars.pot_multiplier).round() as i32;
         if let Ok(index) = self.get_player_index(winner_id) {
@@ -1328,11 +1411,158 @@ impl Game {
         self.pots.clear();
         self.round_pool = 0;
 
+        self.prepare_winner_drafts(&[winner_id], raw_pot, total_chips, events);
+    }
+
+    pub(crate) fn record_special_card_received(&mut self, card: SpecialCard) {
+        if card == SpecialCard::AnteUp {
+            self.rounds_since_ante_up = 0;
+            self.ante_up_drawn_this_hand = true;
+        }
+    }
+
+    fn grant_drafted_card(&mut self, player_id: usize, card: SpecialCard, events: &mut Vec<MoveEvent>) {
+        if let Ok(idx) = self.get_player_index(player_id) {
+            if self.players[idx].special_cards.len() < self.ctx.special_card_limit {
+                self.players[idx].special_cards.push(card);
+                self.record_special_card_received(card);
+                events.push(MoveEvent {
+                    actor_id: Some(player_id),
+                    action: MoveAction::DealSpecial { count: 1 },
+                    private: false,
+                });
+            } else {
+                events.push(MoveEvent {
+                    actor_id: Some(player_id),
+                    action: MoveAction::DraftSkippedFull,
+                    private: true,
+                });
+            }
+        }
+    }
+
+    fn prepare_winner_drafts(
+        &mut self,
+        main_pot_winners: &[usize],
+        pot_amount: i32,
+        total_chips: i32,
+        events: &mut Vec<MoveEvent>,
+    ) {
+        self.pending_drafts.clear();
+
+        if self.ctx.special_card_limit == 0 || main_pot_winners.is_empty() || total_chips <= 0 {
+            self.round = Round::Showdown;
+            return;
+        }
+
+        let effective_blind = ((self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32).max(1);
+        let min_contested_pot = effective_blind + (effective_blind / 2);
+        let pot_ratio = (pot_amount as f64 / total_chips as f64).clamp(0.0, 1.0);
+
+        // disables winner drafts if the pot is too small relative to the overall wealth of all players
+        if pot_amount <= min_contested_pot || pot_ratio < 0.03 {
+            self.round = Round::Showdown;
+            return;
+        }
+
+        for &winner_id in main_pot_winners {
+            let Ok(idx) = self.get_player_index(winner_id) else {
+                continue;
+            };
+            if self.players[idx].remove {
+                continue;
+            }
+
+            if self.players[idx].special_cards.len() >= self.ctx.special_card_limit {
+                events.push(MoveEvent {
+                    actor_id: Some(winner_id),
+                    action: MoveAction::DraftSkippedFull,
+                    private: true,
+                });
+                continue;
+            }
+
+            let options = SpecialCard::draw_winner_draft_options(3, pot_ratio, self);
+            if options.is_empty() {
+                continue;
+            }
+
+            match self.players[idx].player_type {
+                PlayerType::Computer(_) => {
+                    if let Some(&auto_card) = options.first() {
+                        self.grant_drafted_card(winner_id, auto_card, events);
+                    }
+                }
+                PlayerType::Human => {
+                    self.pending_drafts.push(WinnerDraft {
+                        player_id: winner_id,
+                        options,
+                    });
+                }
+            }
+        }
+
+        self.round = if self.pending_drafts.is_empty() {
+            Round::Showdown
+        } else {
+            Round::WinnerDraft
+        };
+    }
+
+    pub(crate) fn pick_winner_draft(&mut self, player_id: usize, choice_index: usize) -> Result<Vec<MoveEvent>, GameError> {
+        if self.round != Round::WinnerDraft {
+            return Err(GameError::InvalidRound);
+        }
+
+        let pos = self
+            .pending_drafts
+            .iter()
+            .position(|draft| draft.player_id == player_id)
+            .ok_or(GameError::InvalidAction)?;
+
+        if choice_index >= self.pending_drafts[pos].options.len() {
+            return Err(GameError::CardIndexInvalid);
+        }
+
+        let draft = self.pending_drafts.remove(pos);
+        let chosen_card = draft.options[choice_index];
+
+        let mut events = Vec::new();
+        self.grant_drafted_card(player_id, chosen_card, &mut events);
+
+        if self.pending_drafts.is_empty() {
+            self.round = Round::Showdown;
+        }
+
+        Ok(events)
+    }
+
+    pub(crate) fn timeout_winner_draft(&mut self) -> Vec<MoveEvent> {
+        if self.round != Round::WinnerDraft {
+            return Vec::new();
+        }
+
+        let drafts = std::mem::take(&mut self.pending_drafts);
+        let mut events = Vec::new();
+
+        for draft in drafts {
+            if let Some(&auto_card) = draft.options.first() {
+                self.grant_drafted_card(draft.player_id, auto_card, &mut events);
+            }
+        }
+
         self.round = Round::Showdown;
+        events
     }
 
     fn end_hand(&mut self) {
         self.games_played += 1;
+        if self.ante_up_drawn_this_hand {
+            self.rounds_since_ante_up = 0;
+        } else {
+            self.rounds_since_ante_up = self.rounds_since_ante_up.saturating_add(1);
+        }
+        self.ante_up_drawn_this_hand = false;
         self.players.retain(|p| !p.remove);
 
         let expired = self.modifiers.hand_ended();
@@ -1403,7 +1633,13 @@ impl Game {
     }
 
     fn deal_special_cards(&mut self, count: usize, events: &mut Vec<MoveEvent>) {
-        for p_index in 0..self.players.len() {
+        let len = self.players.len();
+        if len == 0 {
+            return;
+        }
+
+        for offset in 0..len {
+            let p_index = (self.dealer_index + 1 + offset) % len;
             let special_card_count = self.players[p_index].special_cards.len();
             if self.players[p_index].folded || special_card_count >= self.ctx.special_card_limit as usize {
                 continue;

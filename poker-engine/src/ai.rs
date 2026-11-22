@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Game, Action, Round, Player};
 use crate::poker::*;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) enum AIType {
     Safe,
     Risky,
@@ -16,7 +16,7 @@ pub(crate) enum AIType {
     Random,
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq)]
 pub(crate) struct AI {
     ai_type: AIType,
     total_bet: i32,
@@ -26,6 +26,8 @@ pub(crate) struct AI {
     randomness: f64, // 0-1, probability of performing an unexpected action
 }
 impl AI {
+    #[cfg(test)]
+    #[cfg_attr(tarpaulin, skip)]
     pub(crate) fn from_str(str: &str) -> Self {
         match str.to_lowercase().as_str() {
             "risky" => Self::new(AIType::Risky),
@@ -59,6 +61,11 @@ impl AI {
 
         let mut actions: Vec<Action> = Vec::new();
         let player = &game.players[player_index].clone();
+
+        if game.is_player_all_in(player) {
+            actions.push(Action::Call);
+            return actions;
+        }
 
         let fear_greed_sum = self.fear + self.greed;
         let fear_greed_ratio = if fear_greed_sum > 0.0 { self.fear / fear_greed_sum } else { 0.5 };
@@ -105,12 +112,14 @@ impl AI {
                     let max_hand_capacity = if let Some(max_bet) = maybe_max_bet { (max_bet - player.total_bet).max(0) } else { i32::MAX };
                     let call_portion = (game.bet - player.round_bet).max(0).min(player.chips).min(max_hand_capacity);
                     let max_cap_raise = (max_hand_capacity - call_portion).max(0);
+                    let remaining_chips_for_raise = (player.chips - call_portion).max(0);
+                    let max_raise = remaining_chips_for_raise.min(max_cap_raise);
 
                     let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
-                    let min_r = effective_min.min(player.chips).min(max_cap_raise);
+                    let min_r = effective_min.min(max_raise);
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.1 * self.greed * player.chips as f64) as i32;
-                    let adjusted_raise = raise_amount.max(min_r).min(player.chips).min(max_cap_raise);
-                    if adjusted_raise > 0 && (adjusted_raise >= min_r || adjusted_raise == max_cap_raise) {
+                    let adjusted_raise = raise_amount.max(min_r).min(max_raise);
+                    if adjusted_raise > 0 && (adjusted_raise >= min_r || adjusted_raise == max_raise) {
                         self.total_bet += adjusted_raise + (game.bet - player.round_bet).min(player.chips);
                         let upper_budget = player.chips.max(1);
                         self.budget = self.calculate_round_budget(player, game, hand_strength).clamp((self.budget + raise_amount).min(upper_budget), upper_budget);
@@ -122,23 +131,49 @@ impl AI {
                     }
                 }
             } else {
-                actions.push(Action::Call);
+                let greed_ratio = 1.0 - fear_greed_ratio;
+                let budget_used = if self.budget > 0 { (self.total_bet as f64 / self.budget as f64).clamp(0.0, 1.0) } else { 0.0 };
+                let p_raise = (greed_ratio * hand_strength * 2.0 * (1.0 - budget_used)).clamp(0.0, 1.0);
+
+                if hand_strength >= 0.7 && !p_raise.is_nan() && game.ctx.rng.random_bool(p_raise) && !game.is_player_at_max_bet(player) {
+                    let maybe_max_bet = game.get_current_max_bet();
+                    let max_hand_capacity = if let Some(max_bet) = maybe_max_bet { (max_bet - player.total_bet).max(0) } else { i32::MAX };
+                    let call_portion = (game.bet - player.round_bet).max(0).min(player.chips).min(max_hand_capacity);
+                    let max_cap_raise = (max_hand_capacity - call_portion).max(0);
+                    let remaining_chips_for_raise = (player.chips - call_portion).max(0);
+                    let max_raise = remaining_chips_for_raise.min(max_cap_raise);
+
+                    let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
+                    let min_r = effective_min.min(max_raise);
+                    let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
+                    let adjusted_raise = raise_amount.max(min_r).min((self.budget - self.total_bet).max(0)).min(max_raise);
+                    if adjusted_raise > 0 && (adjusted_raise >= min_r || adjusted_raise == max_raise) {
+                        actions.push(Action::Raise { amount: adjusted_raise });
+                    } else {
+                        actions.push(Action::Call);
+                    }
+                } else {
+                    actions.push(Action::Call);
+                }
             }
         } else {
+            let greed_ratio = 1.0 - fear_greed_ratio;
             let budget_used = if self.budget > 0 { (self.total_bet as f64 / self.budget as f64).clamp(0.0, 1.0) } else { 0.0 };
-            let p_raise = (fear_greed_ratio * hand_strength * 2.0 * (1.0 - budget_used)).clamp(0.0, 1.0);
+            let p_raise = (greed_ratio * hand_strength * 2.0 * (1.0 - budget_used)).clamp(0.0, 1.0);
 
             if !p_raise.is_nan() && game.ctx.rng.random_bool(p_raise) && !game.is_player_at_max_bet(player) {
                 let maybe_max_bet = game.get_current_max_bet();
                 let max_hand_capacity = if let Some(max_bet) = maybe_max_bet { (max_bet - player.total_bet).max(0) } else { i32::MAX };
                 let call_portion = (game.bet - player.round_bet).max(0).min(player.chips).min(max_hand_capacity);
                 let max_cap_raise = (max_hand_capacity - call_portion).max(0);
+                let remaining_chips_for_raise = (player.chips - call_portion).max(0);
+                let max_raise = remaining_chips_for_raise.min(max_cap_raise);
 
                 let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
-                let min_r = effective_min.min(player.chips).min(max_cap_raise);
+                let min_r = effective_min.min(max_raise);
                 let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
-                let adjusted_raise = raise_amount.max(min_r).min(self.budget - self.total_bet).min(player.chips).min(max_cap_raise);
-                if adjusted_raise > 0 && (adjusted_raise >= min_r || adjusted_raise == max_cap_raise) {
+                let adjusted_raise = raise_amount.max(min_r).min((self.budget - self.total_bet).max(0)).min(max_raise);
+                if adjusted_raise > 0 && (adjusted_raise >= min_r || adjusted_raise == max_raise) {
                     actions.push(Action::Raise { amount: adjusted_raise });
                 } else {
                     actions.push(Action::Call);
@@ -151,7 +186,7 @@ impl AI {
         actions
     }
 
-    fn calculate_round_budget(&self, player: &Player, game: &mut Game, hand_strength: f64) -> i32 {
+    pub(crate) fn calculate_round_budget(&self, player: &Player, game: &mut Game, hand_strength: f64) -> i32 {
         if game.round <= Round::Preflop {
             // by default, will stake at most 1/10 of chips + blind size on preflop
             let base_bet: f64 = player.chips as f64 / 10.0 * self.greed;
@@ -185,7 +220,7 @@ impl AI {
         adjusted_budget.clamp(0,player.chips)
     }
 
-    fn calculate_hand_value(self, hand_cards: &Vec<ExpandedCard>, game: &Game) -> f64 {
+    pub(crate) fn calculate_hand_value(&self, hand_cards: &Vec<ExpandedCard>, game: &Game) -> f64 {
         fn get_raw_value(hand: &Hand) -> f64 {
             fn base_hand_value(hand_type: HandType) -> f64 {
                 match hand_type {
@@ -205,9 +240,9 @@ impl AI {
 
             let base_value: f64 = base_hand_value(hand.hand_type);
 
-            let normalised_rank_value: f64 = (hand.cards[0][0].card().rank as u8 - 1) as f64 / 13.0;
+            let normalised_rank_value: f64 = (hand.cards[0][0].card().rank as u8).saturating_sub(1) as f64 / 13.0;
             // high card (2) = 0, straight flush (K) = ~9.03
-            let centered_adjusted_value: f64 = base_value * (normalised_rank_value * 0.25 + 1.0) - 1.0;
+            let centered_adjusted_value: f64 = base_value * (normalised_rank_value * 0.1 + 1.0) - 1.0;
             // range 0-1, between worst and best hand
             let normalised_adjusted_value: f64 = centered_adjusted_value / 9.03;
 
@@ -228,7 +263,7 @@ impl AI {
         // if this hand is the same as the hand on the board, penalise
         let board_hand = Hand::new(&game.community, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
         let is_board = hand == board_hand;
-        let playing_board = hand.hand_type == hand.hand_type;
+        let playing_board = hand.hand_type == board_hand.hand_type;
         if is_board {
             raw_value /= 3.0;
         } else if playing_board {

@@ -566,7 +566,7 @@ pub(crate) fn get_representation(
 
             ctx.used_counts[group] += cards_taken;
             ctx.jokers -= jokers_taken;
-            matched_group.push((Rank::from(group), matched_cards));
+            matched_group.push((Rank::from(group + 1), matched_cards));
 
             if match_group(12, rep_index + 1, representation, matched_group, ctx) {
                 return true;
@@ -624,7 +624,7 @@ fn get_straight(cards: &Vec<ExpandedCard>, size: usize, suit: Option<Suit>, hand
             if matches + ctx.jokers >= size {
                 for n in (i - size_i32 + 1..=i).rev() {
                     let index = n.rem_euclid(13) as usize;
-                    straight.push((Rank::from(index), if ctx.organised_cards[index].len() >= 1 {
+                    straight.push((Rank::from(index + 1), if ctx.organised_cards[index].len() >= 1 {
                         vec![ctx.organised_cards[index][ctx.used_counts[index]]]
                     } else {
                         vec![usize::MAX]

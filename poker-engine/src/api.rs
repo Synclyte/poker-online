@@ -65,6 +65,8 @@ pub(crate) struct GameState {
     pub modifier_vars: ModifierDisplayValues,
     pub games_played: i32,
     pub max_bet: Option<i32>,
+    pub winner_draft_options: Option<Vec<String>>,
+    pub winner_draft_pending_players: Vec<usize>,
 }
 
 #[derive(Serialize)]
@@ -163,7 +165,7 @@ fn convert_to_cardview(c: &ExpandedCard) -> CardView {
  * Gets the current game state, as seen by the specified player, as a GameState struct
  */
 pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
-    let is_showdown = game.round == Round::Showdown;
+    let is_showdown = game.round == Round::Showdown || game.round == Round::WinnerDraft;
     let player_states: Vec<PlayerState> = game.players.iter().enumerate().map(|(i, p)| {
         let hole_cards: Vec<CardView> = {
             let forced_visibility = is_showdown || p.id == viewer_id;
@@ -241,5 +243,15 @@ pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
         },
         games_played: game.games_played,
         max_bet: game.get_current_max_bet(),
+        winner_draft_options: game
+            .pending_drafts
+            .iter()
+            .find(|draft| draft.player_id == viewer_id)
+            .map(|draft| draft.options.iter().map(|c| c.to_string()).collect()),
+        winner_draft_pending_players: game
+            .pending_drafts
+            .iter()
+            .map(|draft| draft.player_id)
+            .collect(),
     }
 }

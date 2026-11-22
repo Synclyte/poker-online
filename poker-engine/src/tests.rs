@@ -11,7 +11,7 @@ mod tests {
     mod game_tests {
         use crate::Action::{Raise, Call, Fold, PlaySpecial};
         use crate::api::view_game_state;
-        use crate::ai::AIType;
+        use crate::ai::{AI, AIType};
         use crate::{Action, ConfigPlayer, DeckType, Game, GameConfig, GameError, MoveAction, MoveEvent, PlayerType, Round, SpecialCard};
         use crate::poker::*;
         use crate::special::*;
@@ -77,7 +77,7 @@ mod tests {
             game.players[p2_idx].cards = second_hand;
 
             make_move_and_end_turn(Raise { amount: 10000 }, game.players[game.turn_index].id, &mut game);
-            make_move_and_end_turn(Raise { amount: 10000 }, game.players[game.turn_index].id, &mut game);
+            make_move_and_end_turn(Call, game.players[game.turn_index].id, &mut game);
 
             game.players[p1_idx].chips == game.ctx.starting_chips * 2 && game.players[p2_idx].chips == 0
         }
@@ -929,6 +929,899 @@ mod tests {
             assert!(res.is_ok());
             // round bet goes through, and total bet is now blind cost (20) + bet (2000)
             assert_eq!(game.players[p0_idx].round_bet, 2020);
+        }
+
+        #[test]
+        fn test_non_targeting_special_card_succeeds_after_player_zero_folds() {
+            let mut game = get_configured_started_game(3, 0);
+
+            // Fold player 0
+            let p0_idx = game.get_player_index(0).unwrap();
+            game.players[p0_idx].folded = true;
+            if game.get_current_turn_player_id() == 0 {
+                game.advance_turn_index();
+            }
+
+            let active_id = game.get_current_turn_player_id();
+            let active_idx = game.get_player_index(active_id).unwrap();
+            game.players[active_idx].special_cards.push(SpecialCard::ChipBoost);
+            game.players[active_idx].special_cards.push(SpecialCard::DrawCardCommunity);
+
+            // Even if target_id is Some(0) (folded player), non-targeting cards should succeed
+            let res_with_zero = game.player_move(
+                active_id,
+                PlaySpecial {
+                    card: SpecialCard::ChipBoost,
+                    target_id: Some(0),
+                    card_index: Some(0),
+                },
+            );
+            assert!(res_with_zero.is_ok(), "Non-targeting special card should succeed even if target_id is Some(0) and player 0 folded");
+
+            // And with target_id: None
+            let res_with_none = game.player_move(
+                active_id,
+                PlaySpecial {
+                    card: SpecialCard::DrawCardCommunity,
+                    target_id: None,
+                    card_index: None,
+                },
+            );
+            assert!(res_with_none.is_ok(), "Non-targeting special card should succeed with target_id: None");
+
+            // Targeting special card against folded player 0 should still fail with InvalidTargetPlayer
+            game.players[active_idx].special_cards.push(SpecialCard::HandSwap);
+            let res_targeting_folded = game.player_move(
+                active_id,
+                PlaySpecial {
+                    card: SpecialCard::HandSwap,
+                    target_id: Some(0),
+                    card_index: None,
+                },
+            );
+            assert!(matches!(res_targeting_folded, Err(GameError::InvalidTargetPlayer)));
+        }
+
+        #[test]
+        fn test_ante_up_stacks_multiplicatively_and_persists_across_hands() {
+            let mut game = get_configured_started_game(2, 0);
+            game.ctx.max_bet_multiplier = Some(25);
+            assert_eq!(game.modifiers.vars.ante_multiplier, 1.0);
+            assert_eq!(game.get_current_max_bet(), Some(500));
+
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            game.players[p0_idx].chips = 10000;
+            game.players[p0_idx].special_cards.push(SpecialCard::AnteUp);
+            game.players[p0_idx].special_cards.push(SpecialCard::AnteUp);
+            game.players[p0_idx].special_cards.push(SpecialCard::AnteUp);
+
+            for expected_mult in [2.0, 4.0, 8.0] {
+                let res = game.player_move(
+                    p0_id,
+                    PlaySpecial {
+                        card: SpecialCard::AnteUp,
+                        target_id: None,
+                        card_index: None,
+                    },
+                );
+                assert!(res.is_ok());
+                assert_eq!(game.modifiers.vars.ante_multiplier, expected_mult);
+            }
+
+            assert_eq!(game.get_current_max_bet(), Some(4000));
+            assert_eq!(
+                game.modifiers
+                    .active
+                    .iter()
+                    .filter(|m| matches!(m.effect, ModifierEffect::AnteMultiplier { .. }))
+                    .count(),
+                1
+            );
+
+            // End current hand and start a new hand: stacked ante multiplier should persist and scale blinds
+            let mut events = Vec::new();
+            game.end_hand();
+            game.start_new_hand(&mut events);
+
+            assert_eq!(game.modifiers.vars.ante_multiplier, 8.0);
+            // Blind size is 20 * 8.0 = 160 (SB = 80, BB = 160)
+            assert_eq!(game.bet, 160);
+            assert_eq!(game.round_pool, 240);
+        }
+
+        #[test]
+        fn test_winner_draft_disabled_on_uncontested_small_pot() {
+            let mut game = get_configured_started_game(2, 0);
+            let p0_id = game.get_current_turn_player_id();
+            let _ = game.player_move(p0_id, Fold).unwrap();
+
+            assert_eq!(game.round, Round::Showdown);
+            assert!(game.pending_drafts.is_empty());
+        }
+
+        #[test]
+        fn test_winner_draft_offered_privately_and_pick_transitions_to_showdown() {
+            let mut game = get_configured_started_game(2, 0);
+            let p0_id = game.get_current_turn_player_id();
+            let p1_id = game.players.iter().find(|p| p.id != p0_id).unwrap().id;
+
+            // p0 raises meaningfully (> 2% of 2000 chips and > 1.5x blind), p1 folds
+            let _ = game.player_move(p0_id, Raise { amount: 200 }).unwrap();
+            let _ = game.player_move(p1_id, Fold).unwrap();
+
+            assert_eq!(game.round, Round::WinnerDraft);
+            assert_eq!(game.pending_drafts.len(), 1);
+            assert_eq!(game.pending_drafts[0].options.len(), 3);
+
+            // Winner sees 3 options; loser does not
+            let winner_view = view_game_state(&game, p0_id);
+            let loser_view = view_game_state(&game, p1_id);
+            assert_eq!(winner_view.winner_draft_options.as_ref().map(|v| v.len()), Some(3));
+            assert!(loser_view.winner_draft_options.is_none());
+            assert_eq!(winner_view.winner_draft_pending_players, vec![p0_id]);
+
+            let expected_card = game.pending_drafts[0].options[1];
+            let pick_events = game.pick_winner_draft(p0_id, 1).unwrap();
+            assert_eq!(game.round, Round::Showdown);
+            assert!(game.pending_drafts.is_empty());
+            assert!(pick_events.iter().any(|e| e.actor_id == Some(p0_id) && matches!(e.action, MoveAction::DealSpecial { count: 1 })));
+
+            let winner_idx = game.get_player_index(p0_id).unwrap();
+            assert_eq!(game.players[winner_idx].special_cards, vec![expected_card]);
+        }
+
+        #[test]
+        fn test_winner_draft_parallel_tie_and_timeout() {
+            let mut game = get_configured_started_game(2, 0);
+            let p0_id = game.players[0].id;
+            let p1_id = game.players[1].id;
+
+            // Give both players identical royal flush hands and go all-in to tie the main pot
+            let royal = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("a", "s"),
+            ];
+            game.players[0].cards = royal.clone();
+            game.players[1].cards = royal;
+
+            let first_id = game.get_current_turn_player_id();
+            let second_id = if first_id == p0_id { p1_id } else { p0_id };
+            let _ = game.player_move(first_id, Raise { amount: 10000 }).unwrap();
+            let _ = game.player_move(second_id, Call).unwrap();
+
+            // All-in players receive a special card on Turn and get a chance to act on Turn/River
+            while matches!(game.round, Round::Preflop | Round::Flop | Round::Turn | Round::River) {
+                let turn_id = game.get_current_turn_player_id();
+                let _ = game.player_move(turn_id, Call).unwrap();
+            }
+
+            assert_eq!(game.round, Round::WinnerDraft);
+            assert_eq!(game.pending_drafts.len(), 2);
+
+            // Second player picks first (parallel order independence)
+            let _ = game.pick_winner_draft(second_id, 0).unwrap();
+            assert_eq!(game.round, Round::WinnerDraft);
+            assert_eq!(game.pending_drafts.len(), 1);
+
+            // Timeout resolves remaining player and moves to Showdown
+            let timeout_events = game.timeout_winner_draft();
+            assert_eq!(game.round, Round::Showdown);
+            assert!(game.pending_drafts.is_empty());
+            assert_eq!(timeout_events.len(), 1);
+            assert_eq!(timeout_events[0].actor_id, Some(first_id));
+        }
+
+        #[test]
+        fn test_winner_draft_scales_card_quality_by_pot_ratio() {
+            let mut game = get_configured_started_game(2, 0);
+
+            let high_tier = [
+                SpecialCard::PotMult,
+                SpecialCard::ChipBoost,
+                SpecialCard::ChipGamble,
+                SpecialCard::WithdrawBet,
+                SpecialCard::Joker,
+                SpecialCard::HandSwap,
+                SpecialCard::AnteUp,
+                SpecialCard::Blackjack,
+            ];
+
+            let mut low_pot_high_hits = 0usize;
+            let mut high_pot_high_hits = 0usize;
+            let samples = 200;
+
+            for _ in 0..samples {
+                let low_opts = SpecialCard::draw_winner_draft_options(3, 0.03, &mut game);
+                low_pot_high_hits += low_opts.iter().filter(|c| high_tier.contains(c)).count();
+
+                let high_opts = SpecialCard::draw_winner_draft_options(3, 0.60, &mut game);
+                high_pot_high_hits += high_opts.iter().filter(|c| high_tier.contains(c)).count();
+            }
+
+            assert!(
+                low_pot_high_hits < samples / 4,
+                "Low pots should rarely offer high-tier cards (got {low_pot_high_hits} out of {})",
+                samples * 3
+            );
+            assert!(
+                high_pot_high_hits > low_pot_high_hits * 4,
+                "High pots should offer substantially more high-tier cards ({high_pot_high_hits} vs {low_pot_high_hits})"
+            );
+        }
+
+        #[test]
+        fn test_bot_forced_all_in_previous_street_handles_next_street_without_panic_or_fold() {
+            let mut game = get_configured_started_game(1, 1);
+            let human_idx = game
+                .players
+                .iter()
+                .position(|p| matches!(p.player_type, PlayerType::Human))
+                .unwrap();
+            let bot_idx = 1 - human_idx;
+            let human_id = game.players[human_idx].id;
+
+            // Give human plenty of chips and short-stack the bot so bot is forced all-in on Preflop
+            game.players[human_idx].chips = 2000;
+            game.players[bot_idx].chips = 40;
+            game.players[bot_idx].round_bet = 0;
+            game.players[bot_idx].total_bet = 0;
+
+            // Human raises 500; if it's currently bot's turn first, let bot act first
+            if game.get_current_turn_player_id() != human_id {
+                let _ = game.player_move(game.players[bot_idx].id, Call);
+            }
+            let _ = game.player_move(human_id, Raise { amount: 500 });
+
+            // If bot wasn't already forced all-in on preflop, advance until Flop/Turn
+            if game.round == Round::Preflop && game.get_current_turn_player_id() == human_id {
+                let _ = game.player_move(human_id, Call);
+            }
+
+            // Force bot to all-in (0 chips) with a special card on Turn while human bets
+            game.round = Round::Turn;
+            game.players[bot_idx].chips = 0;
+            game.players[bot_idx].folded = false;
+            game.players[bot_idx].acted = false;
+            game.players[bot_idx].turn_ended = false;
+            game.players[bot_idx].round_bet = 0;
+            game.players[bot_idx].special_cards.push(SpecialCard::ChipBoost);
+            game.players[human_idx].acted = false;
+            game.players[human_idx].turn_ended = false;
+            game.players[human_idx].round_bet = 0;
+            game.bet = 0;
+            game.turn_index = human_idx;
+
+            let res = game.player_move(human_id, Raise { amount: 100 });
+            assert!(res.is_ok());
+            assert!(!game.players[bot_idx].folded, "All-in bot must not fold on Turn");
+        }
+
+        #[test]
+        fn test_winner_draft_skipped_when_special_cards_full() {
+            let mut game = get_configured_started_game(2, 0);
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_id = game.players.iter().find(|p| p.id != p0_id).unwrap().id;
+
+            game.players[p0_idx].special_cards = vec![SpecialCard::ChipBoost; game.ctx.special_card_limit];
+
+            let _ = game.player_move(p0_id, Raise { amount: 200 }).unwrap();
+            let events = game.player_move(p1_id, Fold).unwrap();
+
+            assert_eq!(game.round, Round::Showdown);
+            assert!(game.pending_drafts.is_empty());
+            assert!(events.iter().any(|e| {
+                e.actor_id == Some(p0_id)
+                    && e.private
+                    && matches!(e.action, MoveAction::DraftSkippedFull)
+            }));
+        }
+
+        #[test]
+        fn test_short_stack_raise_rejected_and_bot_falls_back_to_call() {
+            let mut game = get_configured_started_game(1, 1);
+            let human_idx = game
+                .players
+                .iter()
+                .position(|p| matches!(p.player_type, PlayerType::Human))
+                .unwrap();
+            let bot_idx = 1 - human_idx;
+
+            game.round = Round::Flop;
+            game.bet = 100;
+            game.players[human_idx].round_bet = 100;
+            game.players[human_idx].acted = true;
+            game.players[human_idx].turn_ended = true;
+
+            // Bot only has 50 chips while facing a 100-chip bet (cannot cover call, let alone raise)
+            game.players[bot_idx].chips = 50;
+            game.players[bot_idx].round_bet = 0;
+            game.players[bot_idx].acted = false;
+            game.players[bot_idx].turn_ended = false;
+            game.players[bot_idx].cards = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("a", "s"),
+            ];
+            game.turn_index = bot_idx;
+
+            let mut events = Vec::new();
+            let direct_raise = game.apply_action(bot_idx, Raise { amount: 20 }, &mut events);
+            assert!(matches!(direct_raise, Err(GameError::InvalidAction)));
+
+            let mut ai = AI::new(AIType::Risky);
+            let actions = ai.calculate_next_action(bot_idx, &mut game);
+            assert!(
+                !actions.iter().any(|a| matches!(a, Action::Raise { .. })),
+                "Short-stacked bot unable to cover call must not emit Action::Raise"
+            );
+        }
+
+        #[test]
+        fn test_bot_raise_waits_for_human_before_advancing_street() {
+            let mut game = get_configured_started_game(1, 1);
+            let human_idx = game
+                .players
+                .iter()
+                .position(|p| matches!(p.player_type, PlayerType::Human))
+                .unwrap();
+            let bot_idx = 1 - human_idx;
+            let human_id = game.players[human_idx].id;
+
+            game.round = Round::Flop;
+            game.bet = 0;
+            game.round_pool = 0;
+            game.players[human_idx].chips = 2000;
+            game.players[human_idx].round_bet = 0;
+            game.players[human_idx].acted = false;
+            game.players[human_idx].turn_ended = false;
+
+            // Give Risky bot a Royal Flush on Flop so it raises when human checks
+            game.players[bot_idx].player_type = PlayerType::Computer(AI::new(AIType::Risky));
+            game.players[bot_idx].chips = 2000;
+            game.players[bot_idx].round_bet = 0;
+            game.players[bot_idx].acted = false;
+            game.players[bot_idx].turn_ended = false;
+            game.players[bot_idx].cards = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("a", "s"),
+            ];
+            game.turn_index = human_idx;
+
+            let events = game.player_move(human_id, Call).unwrap();
+
+            assert!(
+                events.iter().any(|e| e.actor_id == Some(game.players[bot_idx].id)
+                    && matches!(e.action, MoveAction::Action { action: Action::Raise { .. }, .. })),
+                "Expected bot to raise on Flop"
+            );
+            assert_eq!(game.round, Round::Flop, "Street must not advance until human matches bot raise");
+            assert!(game.bet > 0);
+            assert!(!game.players[human_idx].acted, "Human must be reset to acted = false after bot raise");
+            assert_eq!(game.get_current_turn_player_id(), human_id);
+        }
+
+        #[test]
+        fn test_multi_street_events_record_per_action_bet_deltas() {
+            let mut game = get_configured_started_game(1, 2);
+            let human_idx = game
+                .players
+                .iter()
+                .position(|p| matches!(p.player_type, PlayerType::Human))
+                .unwrap();
+            let human_id = game.players[human_idx].id;
+
+            // Position on Preflop where human acts last, bot acts right after on Flop with a Royal Flush
+            let bot1_idx = (human_idx + 1) % 3;
+            let bot2_idx = (human_idx + 2) % 3;
+
+            game.players[human_idx].chips = 2000;
+            game.players[human_idx].round_bet = 0;
+            game.players[human_idx].total_bet = 0;
+            game.players[human_idx].acted = false;
+            game.players[human_idx].turn_ended = false;
+
+            game.players[bot1_idx].player_type = PlayerType::Computer(AI::new(AIType::Risky));
+            game.players[bot1_idx].chips = 2000;
+            game.players[bot1_idx].round_bet = 20;
+            game.players[bot1_idx].total_bet = 20;
+            game.players[bot1_idx].acted = true;
+            game.players[bot1_idx].turn_ended = true;
+            game.players[bot1_idx].cards = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("a", "s"),
+            ];
+
+            game.players[bot2_idx].player_type = PlayerType::Computer(AI::new(AIType::Safe));
+            game.players[bot2_idx].chips = 2000;
+            game.players[bot2_idx].round_bet = 20;
+            game.players[bot2_idx].total_bet = 20;
+            game.players[bot2_idx].acted = true;
+            game.players[bot2_idx].turn_ended = true;
+
+            game.round = Round::Preflop;
+            game.bet = 20;
+            game.round_pool = 40;
+            game.dealer_index = human_idx;
+            game.turn_index = human_idx;
+
+            let events = game.player_move(human_id, Call).unwrap();
+
+            // First event is human's Preflop Call (bet_delta = 20, round_bet = 20, total_bet = 20)
+            assert!(matches!(
+                events.first().map(|e| &e.action),
+                Some(MoveAction::Action {
+                    action: Action::Call,
+                    bet_delta: Some(20),
+                    round_bet: Some(20),
+                    total_bet: Some(20),
+                })
+            ));
+
+            // Subsequent DealCommunity should precede any Flop Raise by bot1
+            let deal_pos = events.iter().position(|e| matches!(e.action, MoveAction::DealCommunity { count: 3 })).unwrap();
+            let flop_raise = events[deal_pos + 1..].iter().find(|e| {
+                e.actor_id == Some(game.players[bot1_idx].id)
+                    && matches!(e.action, MoveAction::Action { action: Action::Raise { .. }, .. })
+            });
+            assert!(flop_raise.is_some(), "Expected bot1 to raise on Flop after DealCommunity");
+            if let MoveAction::Action {
+                action: Action::Raise { amount },
+                bet_delta: Some(delta),
+                round_bet: Some(rb),
+                total_bet: Some(tb),
+            } = &flop_raise.unwrap().action
+            {
+                assert_eq!(delta, amount);
+                assert_eq!(rb, amount);
+                assert_eq!(*tb, 20 + *amount);
+            } else {
+                panic!("Expected bet metadata on Flop Raise event");
+            }
+        }
+
+        #[test]
+        fn test_ante_up_pity_increments_across_rounds_and_resets_on_draw() {
+            let mut game = get_configured_started_game(2, 0);
+            assert_eq!(game.rounds_since_ante_up, 0);
+            assert!(!game.ante_up_drawn_this_hand);
+
+            // Simulate consecutive hands with no AnteUp drawn
+            for expected_round in 1..=ANTE_UP_PITY_MAX_ROUNDS {
+                game.end_hand();
+                assert_eq!(game.rounds_since_ante_up, expected_round);
+                assert!(!game.ante_up_drawn_this_hand);
+                let mut events = Vec::new();
+                game.start_new_hand(&mut events);
+            }
+
+            // At max pity rounds, next draw is guaranteed to be AnteUp and immediately resets pity
+            let drawn = SpecialCard::draw_special_cards(2, game.players[0].id, &mut game);
+            assert_eq!(drawn[0], SpecialCard::AnteUp);
+            assert_eq!(game.rounds_since_ante_up, 0);
+            assert!(game.ante_up_drawn_this_hand);
+
+            // Ending the hand where AnteUp was drawn keeps rounds_since_ante_up at 0
+            game.end_hand();
+            assert_eq!(game.rounds_since_ante_up, 0);
+            assert!(!game.ante_up_drawn_this_hand);
+
+            // Ending the subsequent hand with no AnteUp steps pity to 1
+            game.end_hand();
+            assert_eq!(game.rounds_since_ante_up, 1);
+        }
+
+        #[test]
+        fn test_ante_up_pity_increases_draw_rate_over_rounds() {
+            let mut game = get_configured_started_game(2, 0);
+            let player_id = game.players[0].id;
+            let trials = 200;
+
+            let mut hits_round_0 = 0usize;
+            for _ in 0..trials {
+                game.rounds_since_ante_up = 0;
+                game.ante_up_drawn_this_hand = false;
+                if SpecialCard::draw_special_cards(1, player_id, &mut game)[0] == SpecialCard::AnteUp {
+                    hits_round_0 += 1;
+                }
+            }
+
+            let mut hits_round_5 = 0usize;
+            for _ in 0..trials {
+                game.rounds_since_ante_up = 5;
+                game.ante_up_drawn_this_hand = false;
+                if SpecialCard::draw_special_cards(1, player_id, &mut game)[0] == SpecialCard::AnteUp {
+                    hits_round_5 += 1;
+                }
+            }
+
+            assert!(
+                hits_round_5 > hits_round_0 * 3,
+                "Expected AnteUp draw rate to step up substantially after 5 rounds ({hits_round_5} vs {hits_round_0})"
+            );
+        }
+    }
+
+    #[cfg(test)]
+    mod ai_tests {
+        use crate::Action::PlaySpecial;
+use crate::ai::{AI, AIType};
+        use crate::poker::*;
+        use crate::special::SpecialCard;
+use crate::{Action, ConfigPlayer, DeckType, Game, GameConfig, Round};
+
+        fn get_test_game(player_count: usize, bot_count: usize) -> Game {
+            let mut game = Game::new();
+            let mut players = Vec::with_capacity(player_count + bot_count);
+
+            for id in 0..player_count {
+                players.push(ConfigPlayer::Human { id });
+            }
+
+            for offset in 0..bot_count {
+                players.push(ConfigPlayer::Bot {
+                    id: player_count + offset,
+                    ai_type: AIType::Smart,
+                });
+            }
+
+            let config = GameConfig { 
+                players, 
+                rng_seed: 0, 
+                blind_size: 20, 
+                min_raise: 10, 
+                starting_chips: 1000, 
+                special_card_limit: 3, 
+                deck_type: DeckType::Standard, 
+                max_players: player_count + bot_count, 
+                round_limit: 30,
+                max_bet_multiplier: None,
+            };
+            let _ = game.update_config(config);
+            let _ = game.initialise();
+            let _ = game.start();
+
+            game
+        }
+
+        #[test]
+        fn test_all_ai_types_can_be_configured_and_play() {
+            // Verify that all AI presets (Safe, Risky, Smart, Random) can be initialized,
+            // integrated into a game configuration, and produce valid poker actions.
+            let ai_types = [AIType::Safe, AIType::Risky, AIType::Smart, AIType::Random];
+
+            for (idx, ai_type) in ai_types.into_iter().enumerate() {
+                let mut game = Game::new();
+                let config = GameConfig {
+                    players: vec![
+                        ConfigPlayer::Human { id: 0 },
+                        ConfigPlayer::Bot { id: 1, ai_type },
+                    ],
+                    rng_seed: (idx + 1) as u64,
+                    blind_size: 20,
+                    min_raise: 10,
+                    starting_chips: 1000,
+                    special_card_limit: 3,
+                    deck_type: DeckType::Standard,
+                    max_players: 2,
+                    round_limit: 30,
+                    max_bet_multiplier: None,
+                };
+                assert!(game.update_config(config).is_ok());
+                assert!(game.initialise().is_ok());
+                assert!(game.start().is_ok());
+
+                let mut ai = AI::new(ai_type);
+                let actions = ai.calculate_next_action(1, &mut game);
+                assert!(!actions.is_empty(), "AI of type {:?} should produce at least one action", ai_type);
+                for action in &actions {
+                    assert!(matches!(action, Action::Call | Action::Raise { .. } | Action::Fold));
+                }
+            }
+        }
+
+        #[test]
+        fn test_ai_resets_state_between_rounds() {
+            let mut game = get_test_game(2, 0);
+            let mut ai = AI::new(AIType::Smart);
+
+            // Act in preflop
+            let preflop_actions = ai.calculate_next_action(0, &mut game);
+            assert!(!preflop_actions.is_empty());
+
+            // Advance street and reset round-specific state
+            ai.update_round_parameters();
+
+            // AI calculates fresh actions on Flop
+            game.round = Round::Flop;
+            game.community = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("7", "h"),
+                ExpandedCard::get_card("k", "d"),
+            ];
+            let flop_actions = ai.calculate_next_action(0, &mut game);
+            assert!(!flop_actions.is_empty());
+        }
+
+        #[test]
+        fn test_ai_facing_bet_behavior() {
+            let mut game = get_test_game(2, 0);
+
+            // 1. Calling an affordable bet: facing a small raise within budget
+            let mut ai_caller = AI::new(AIType::Safe);
+            game.bet = 30;
+            game.players[0].round_bet = 20;
+            let call_actions = ai_caller.calculate_next_action(0, &mut game);
+            assert_eq!(call_actions, vec![Action::Call]);
+
+            // 2. Folding when facing an overwhelming bet with weak holdings
+            let mut ai_folder = AI::new(AIType::Safe);
+            game.bet = 800;
+            game.players[0].round_bet = 20;
+            game.players[0].cards = vec![
+                ExpandedCard::get_card("2", "c"),
+                ExpandedCard::get_card("7", "d"),
+            ];
+            let fold_actions = ai_folder.calculate_next_action(0, &mut game);
+            assert_eq!(fold_actions, vec![Action::Fold]);
+
+            // 3. Re-raising with a dominant hand
+            let mut ai_raiser = AI::new(AIType::Risky);
+            game.bet = 100;
+            game.players[0].round_bet = 20;
+            game.players[0].cards = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("a", "s"),
+            ];
+            let raise_actions = ai_raiser.calculate_next_action(0, &mut game);
+            assert!(matches!(raise_actions.first(), Some(Action::Raise { .. })));
+
+            // 4. Calling when player is already at the table's max bet limit
+            let mut ai_max_bet = AI::new(AIType::Safe);
+            game.ctx.max_bet_multiplier = Some(5);
+            game.players[0].total_bet = 100;
+            game.bet = 200;
+            game.players[0].round_bet = 20;
+            let max_actions = ai_max_bet.calculate_next_action(0, &mut game);
+            assert_eq!(max_actions, vec![Action::Call]);
+
+            // 5. Calling when player has no chips left to raise
+            let mut ai_all_in = AI::new(AIType::Risky);
+            game.ctx.max_bet_multiplier = None;
+            game.players[0].total_bet = 0;
+            game.players[0].chips = 0;
+            game.bet = 100;
+            game.players[0].round_bet = 20;
+            let all_in_actions = ai_all_in.calculate_next_action(0, &mut game);
+            assert_eq!(all_in_actions, vec![Action::Call]);
+        }
+
+        #[test]
+        fn test_ai_uncontested_betting_behavior() {
+            let mut game = get_test_game(2, 0);
+
+            // 1. Checking when holding weak cards and no bet is needed
+            let mut ai_checker = AI::new(AIType::Safe);
+            game.bet = 20;
+            game.players[0].round_bet = 20;
+            game.players[0].cards = vec![
+                ExpandedCard::get_card("2", "c"),
+                ExpandedCard::get_card("7", "d"),
+            ];
+            let check_actions = ai_checker.calculate_next_action(0, &mut game);
+            assert_eq!(check_actions, vec![Action::Call]);
+
+            // 2. Value-betting / Raising when holding a premium hand
+            let mut ai_value_better = AI::new(AIType::Risky);
+            game.bet = 20;
+            game.players[0].round_bet = 20;
+            game.players[0].chips = 1000;
+            game.players[0].cards = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("a", "s"),
+            ];
+            let value_actions = ai_value_better.calculate_next_action(0, &mut game);
+            assert!(matches!(value_actions.first(), Some(Action::Raise { .. })));
+
+            // 3. Checking when already at table max-bet limit
+            let mut ai_at_max = AI::new(AIType::Risky);
+            game.ctx.max_bet_multiplier = Some(5);
+            game.players[0].total_bet = 100;
+            game.bet = 20;
+            game.players[0].round_bet = 20;
+            let at_max_actions = ai_at_max.calculate_next_action(0, &mut game);
+            assert_eq!(at_max_actions, vec![Action::Call]);
+        }
+
+        #[test]
+        fn test_ai_budget_behavior_across_streets() {
+            let mut game = get_test_game(2, 0);
+            let ai = AI::new(AIType::Smart);
+            let mut player = game.players[0].clone();
+
+            // Preflop: budget scales with stack size and respects chip cap
+            game.round = Round::Preflop;
+            player.chips = 1000;
+            let budget_deep = ai.calculate_round_budget(&player, &mut game, 0.5);
+            player.chips = 200;
+            let budget_short = ai.calculate_round_budget(&player, &mut game, 0.5);
+            assert!(budget_deep > budget_short, "Deeper stack should have higher preflop budget");
+            assert!(budget_short <= 200, "Budget cannot exceed chip stack");
+
+            // Post-preflop (Flop/Turn/River): budget increases with hand strength
+            game.round = Round::Flop;
+            player.chips = 800;
+            let budget_weak_hand = ai.calculate_round_budget(&player, &mut game, 0.1);
+            let budget_strong_hand = ai.calculate_round_budget(&player, &mut game, 0.9);
+            assert!(
+                budget_strong_hand > budget_weak_hand,
+                "Stronger hand must produce a higher post-preflop budget"
+            );
+            assert!(budget_strong_hand <= player.chips);
+
+            // Sunk cost effect: bot with committed chips allocates more budget to defend its investment
+            let mut committed_ai = AI::new(AIType::Smart);
+            game.round = Round::Turn;
+            let budget_no_commit = committed_ai.calculate_round_budget(&player, &mut game, 0.5);
+            // Simulate committed bets through a previous raise in this hand
+            game.bet = 200;
+            game.players[0].round_bet = 20;
+            let _ = committed_ai.calculate_next_action(0, &mut game);
+            let budget_with_commit = committed_ai.calculate_round_budget(&player, &mut game, 0.5);
+            assert!(
+                budget_with_commit >= budget_no_commit,
+                "Sunk cost commitment should not decrease round budget"
+            );
+        }
+
+        #[test]
+        fn test_hand_value_hierarchy_and_street_dynamics() {
+            let mut game = get_test_game(2, 0);
+            let ai = AI::new(AIType::Smart);
+
+            // 1. Empty cards have zero value
+            assert_eq!(ai.calculate_hand_value(&vec![], &game), 0.0);
+
+            // 2. Relative poker hand rankings: every tier must evaluate stronger than the tier below it
+            let high_card = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("4", "h"),
+                ExpandedCard::get_card("6", "d"),
+                ExpandedCard::get_card("8", "c"),
+                ExpandedCard::get_card("10", "s"),
+            ];
+            let pair = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("2", "h"),
+                ExpandedCard::get_card("4", "d"),
+                ExpandedCard::get_card("6", "c"),
+                ExpandedCard::get_card("8", "s"),
+            ];
+            let two_pair = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("2", "h"),
+                ExpandedCard::get_card("4", "d"),
+                ExpandedCard::get_card("4", "c"),
+                ExpandedCard::get_card("8", "s"),
+            ];
+            let trips = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("2", "h"),
+                ExpandedCard::get_card("2", "d"),
+                ExpandedCard::get_card("4", "c"),
+                ExpandedCard::get_card("8", "s"),
+            ];
+            let straight = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("3", "h"),
+                ExpandedCard::get_card("4", "d"),
+                ExpandedCard::get_card("5", "c"),
+                ExpandedCard::get_card("6", "s"),
+            ];
+            let flush = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("4", "s"),
+                ExpandedCard::get_card("6", "s"),
+                ExpandedCard::get_card("8", "s"),
+                ExpandedCard::get_card("10", "s"),
+            ];
+            let full_house = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("2", "h"),
+                ExpandedCard::get_card("2", "d"),
+                ExpandedCard::get_card("3", "c"),
+                ExpandedCard::get_card("3", "s"),
+            ];
+            let quads = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("2", "h"),
+                ExpandedCard::get_card("2", "d"),
+                ExpandedCard::get_card("2", "c"),
+                ExpandedCard::get_card("8", "s"),
+            ];
+            let straight_flush = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("3", "s"),
+                ExpandedCard::get_card("4", "s"),
+                ExpandedCard::get_card("5", "s"),
+                ExpandedCard::get_card("6", "s"),
+            ];
+            let royal_flush = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("a", "s"),
+            ];
+
+            let v_high = ai.calculate_hand_value(&high_card, &game);
+            let v_pair = ai.calculate_hand_value(&pair, &game);
+            let v_two_pair = ai.calculate_hand_value(&two_pair, &game);
+            let v_trips = ai.calculate_hand_value(&trips, &game);
+            let v_straight = ai.calculate_hand_value(&straight, &game);
+            let v_flush = ai.calculate_hand_value(&flush, &game);
+            let v_full_house = ai.calculate_hand_value(&full_house, &game);
+            let v_quads = ai.calculate_hand_value(&quads, &game);
+            let v_straight_flush = ai.calculate_hand_value(&straight_flush, &game);
+            let v_royal_flush = ai.calculate_hand_value(&royal_flush, &game);
+
+            assert!(v_pair > v_high, "Pair must rank above High Card");
+            assert!(v_two_pair > v_pair, "Two Pair must rank above Pair");
+            assert!(v_trips > v_two_pair, "Three of a Kind must rank above Two Pair");
+            assert!(v_straight > v_trips, "Straight must rank above Three of a Kind");
+            assert!(v_flush > v_straight, "Flush must rank above Straight");
+            assert!(v_full_house > v_flush, "Full House must rank above Flush");
+            assert!(v_quads > v_full_house, "Four of a Kind must rank above Full House");
+            assert!(v_straight_flush > v_quads, "Straight Flush must rank above Four of a Kind");
+            assert!(v_royal_flush > v_straight_flush, "Royal Flush must rank above Straight Flush");
+
+            // 3. Street dynamics for drawing hands:
+            // A 4-to-a-royal draw has highest potential on the Flop (2 cards to come),
+            // reduced potential on the Turn (1 card to come), and no draw bonus on the River.
+            let drawing_hand = vec![
+                ExpandedCard::get_card("10", "s"),
+                ExpandedCard::get_card("j", "s"),
+                ExpandedCard::get_card("q", "s"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("2", "c"),
+            ];
+
+            game.round = Round::Flop;
+            let val_flop = ai.calculate_hand_value(&drawing_hand, &game);
+
+            game.round = Round::Turn;
+            let val_turn = ai.calculate_hand_value(&drawing_hand, &game);
+
+            game.round = Round::River;
+            let val_river = ai.calculate_hand_value(&drawing_hand, &game);
+
+            assert!(val_flop > val_turn, "Drawing potential on Flop must exceed Turn");
+            assert!(val_turn > val_river, "Drawing potential on Turn must exceed River");
+
+            // 4. Board penalty: when winning combination is on community board, value is discounted
+            game.community = pair.clone();
+            let val_on_board = ai.calculate_hand_value(&pair, &game);
+            game.community.clear();
+            let val_in_hand = ai.calculate_hand_value(&pair, &game);
+            assert!(val_on_board < val_in_hand, "Playing the board must discount hand value");
         }
     }
 

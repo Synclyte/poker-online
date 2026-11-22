@@ -24,9 +24,11 @@ export const GameHeader: React.FC<GameHeaderProps> = ({
                     <strong>
                         {gameState?.roundName === "gameover"
                             ? "Game Over"
-                            : gameState?.roundName
-                                ? gameState.roundName.charAt(0).toUpperCase() + gameState.roundName.slice(1)
-                                : "Waiting"}
+                            : gameState?.roundName === "winnerdraft"
+                                ? "Draft"
+                                : gameState?.roundName
+                                    ? gameState.roundName.charAt(0).toUpperCase() + gameState.roundName.slice(1)
+                                    : "Waiting"}
                     </strong>
                 </div>
                 {config?.roundLimit !== undefined && config.roundLimit > 0 && (

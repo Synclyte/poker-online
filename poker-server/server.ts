@@ -131,6 +131,7 @@ interface RoomData {
     sessionTokens: string[];
     roomId: string;
     chatMessages: ChatMessage[];
+    nextRoundVotes: Set<number>;
     roomCloseTimer?: NodeJS.Timeout | undefined;
 }
 
@@ -161,6 +162,17 @@ interface RoomTurnTimer {
 
 const roomTurnTimers = new Map<string, RoomTurnTimer>();
 const MAX_ANIMATION_BUDGET_MS = 4000;
+
+interface RoomDraftTimer {
+    status: "waiting" | "running";
+    safetyTimer?: NodeJS.Timeout | undefined;
+    timeoutTimer?: NodeJS.Timeout | undefined;
+    deadline?: number | undefined;
+    limit: number;
+}
+
+const roomDraftTimers = new Map<string, RoomDraftTimer>();
+const DRAFT_TIMEOUT_MS = 10000;
 
 function generateSessionToken() {
     return Math.random().toString(36).substring(2, 8) + Date.now().toString(36);
@@ -287,6 +299,87 @@ function updateGameConfig(room: RoomData) {
     }
 }
 
+function clearRoomDraftTimer(roomId: string) {
+    const timer = roomDraftTimers.get(roomId);
+    if (timer) {
+        if (timer.safetyTimer) clearTimeout(timer.safetyTimer);
+        if (timer.timeoutTimer) clearTimeout(timer.timeoutTimer);
+        roomDraftTimers.delete(roomId);
+    }
+}
+
+function startDraftTransition(roomId: string, game: GameAPI) {
+    clearRoomDraftTimer(roomId);
+
+    if (game.get_round() !== "winnerdraft") {
+        return;
+    }
+
+    const draftTimer: RoomDraftTimer = {
+        status: "waiting",
+        limit: DRAFT_TIMEOUT_MS,
+    };
+
+    draftTimer.safetyTimer = setTimeout(() => {
+        startDraftCountdown(roomId, game);
+    }, MAX_ANIMATION_BUDGET_MS);
+
+    roomDraftTimers.set(roomId, draftTimer);
+}
+
+function startDraftCountdown(roomId: string, game: GameAPI) {
+    const timer = roomDraftTimers.get(roomId);
+    if (!timer || timer.status !== "waiting") {
+        return;
+    }
+
+    if (game.get_round() !== "winnerdraft") {
+        clearRoomDraftTimer(roomId);
+        return;
+    }
+
+    if (timer.safetyTimer) {
+        clearTimeout(timer.safetyTimer);
+        timer.safetyTimer = undefined;
+    }
+
+    timer.status = "running";
+    const deadline = Date.now() + timer.limit;
+    timer.deadline = deadline;
+
+    timer.timeoutTimer = setTimeout(() => {
+        executeDraftTimeout(roomId, game);
+    }, timer.limit);
+
+    io.to(roomId).emit("draftTimerStarted", {
+        duration: Math.round(timer.limit / 1000),
+        deadline,
+    });
+}
+
+function executeDraftTimeout(roomId: string, game: GameAPI) {
+    clearRoomDraftTimer(roomId);
+
+    try {
+        if (game.get_round() !== "winnerdraft") {
+            return;
+        }
+
+        const response = JSON.parse(game.timeout_winner_draft()) as MoveResult | ErrorResponse;
+        if (isError(response)) {
+            io.to(roomId).emit(response.responseType, response.message);
+            return;
+        }
+
+        const room = roomMap.get(roomId);
+        if (room) {
+            broadcastGameState(room, response.events);
+        }
+    } catch (err) {
+        console.error("Failed to execute draft timeout:", err);
+    }
+}
+
 function clearRoomTurnTimer(roomId: string) {
     clearTimeout(timers.get(roomId));
     timers.delete(roomId);
@@ -305,31 +398,35 @@ function clearRoomTurnTimer(roomId: string) {
 function startTurnTransition(roomId: string, game: GameAPI, limit: number) {
     clearRoomTurnTimer(roomId);
 
-    const activeRounds = ["preflop", "flop", "turn", "river"];
-    if (!activeRounds.includes(game.get_round())) {
-        return;
+    try {
+        const activeRounds = ["preflop", "flop", "turn", "river"];
+        if (!activeRounds.includes(game.get_round())) {
+            return;
+        }
+
+        const turnPlayerId = game.get_current_turn_player();
+        if (turnPlayerId === null || turnPlayerId === undefined) {
+            return;
+        }
+
+        const prevSeq = roomTurnTimers.get(roomId)?.turnSeq ?? 0;
+        const turnSeq = prevSeq + 1;
+
+        const roomTimer: RoomTurnTimer = {
+            turnPlayerId,
+            turnSeq,
+            status: "waiting",
+            limit,
+        };
+
+        roomTimer.safetyTimer = setTimeout(() => {
+            startTurnCountdown(roomId, game, turnSeq);
+        }, MAX_ANIMATION_BUDGET_MS);
+
+        roomTurnTimers.set(roomId, roomTimer);
+    } catch (err) {
+        console.error("Failed to start turn transition:", err);
     }
-
-    const turnPlayerId = game.get_current_turn_player();
-    if (turnPlayerId === null || turnPlayerId === undefined) {
-        return;
-    }
-
-    const prevSeq = roomTurnTimers.get(roomId)?.turnSeq ?? 0;
-    const turnSeq = prevSeq + 1;
-
-    const roomTimer: RoomTurnTimer = {
-        turnPlayerId,
-        turnSeq,
-        status: "waiting",
-        limit,
-    };
-
-    roomTimer.safetyTimer = setTimeout(() => {
-        startTurnCountdown(roomId, game, turnSeq);
-    }, MAX_ANIMATION_BUDGET_MS);
-
-    roomTurnTimers.set(roomId, roomTimer);
 }
 
 /**
@@ -373,33 +470,39 @@ function executeTurnTimeout(roomId: string, game: GameAPI, turnSeq: number) {
         return;
     }
 
-    const activeRounds = ["preflop", "flop", "turn", "river"];
-    if (!activeRounds.includes(game.get_round())) {
-        clearRoomTurnTimer(roomId);
-        return;
-    }
+    try {
+        const activeRounds = ["preflop", "flop", "turn", "river"];
+        if (!activeRounds.includes(game.get_round())) {
+            clearRoomTurnTimer(roomId);
+            return;
+        }
 
-    let response = JSON.parse(game.player_move(timer.turnPlayerId, "timeout"));
+        let response = JSON.parse(game.player_move(timer.turnPlayerId, "timeout"));
 
-    if (isError(response)) {
-        io.to(roomId).emit(
-            response.responseType,
-            response.message
-        );
-        clearRoomTurnTimer(roomId);
-        return;
-    }
+        if (isError(response)) {
+            io.to(roomId).emit(
+                response.responseType,
+                response.message
+            );
+            clearRoomTurnTimer(roomId);
+            return;
+        }
 
-    io.to(roomId).emit("moveTimeout", response);
+        io.to(roomId).emit("moveTimeout", response);
 
-    const room = roomMap.get(roomId);
-    if (room) {
-        broadcastGameState(room, response.events);
-    }
+        const room = roomMap.get(roomId);
+        if (room) {
+            broadcastGameState(room, response.events);
+        }
 
-    if (activeRounds.includes(game.get_round())) {
-        startTurnTransition(roomId, game, timer.limit);
-    } else {
+        if (activeRounds.includes(game.get_round())) {
+            startTurnTransition(roomId, game, timer.limit);
+        } else {
+            clearRoomTurnTimer(roomId);
+            startDraftTransition(roomId, game);
+        }
+    } catch (err) {
+        console.error("Failed to execute turn timeout:", err);
         clearRoomTurnTimer(roomId);
     }
 }
@@ -418,6 +521,7 @@ function handleRoomRemoval(roomId: string) {
             if (room.activeConnections <= 0) {
                 roomMap.delete(roomId);
                 clearRoomTurnTimer(roomId);
+                clearRoomDraftTimer(roomId);
             }
         }, closeTime);
         console.log(`Room ${roomId} flagged for removal in ${(closeTime / 1000).toFixed(1)} seconds`);
@@ -458,6 +562,82 @@ function broadcastLobbyUpdate(room: RoomData) {
         config: room.config,
         round: room.game.get_round(),
     });
+}
+
+function getActiveHumanIds(room: RoomData): Set<number> {
+    const activeIds = new Set<number>();
+    for (const token of room.sessionTokens) {
+        const session = sessionMap.get(token);
+        if (!session) continue;
+        const player = room.players.find(p => p.id === session.playerId);
+        if (player && !player.isBot) {
+            activeIds.add(player.id);
+        }
+    }
+    return activeIds;
+}
+
+function getNextRoundVotePayload(room: RoomData) {
+    const activeHumanIds = getActiveHumanIds(room);
+    for (const voterId of Array.from(room.nextRoundVotes)) {
+        if (!activeHumanIds.has(voterId)) {
+            room.nextRoundVotes.delete(voterId);
+        }
+    }
+    const totalHumans = activeHumanIds.size;
+    const required = Math.floor(totalHumans / 2) + 1;
+    return {
+        votedPlayerIds: Array.from(room.nextRoundVotes),
+        required,
+        totalHumans,
+    };
+}
+
+function broadcastNextRoundVotes(room: RoomData) {
+    io.to(room.roomId).emit("nextRoundVoteUpdate", getNextRoundVotePayload(room));
+}
+
+function startNextHandForRoom(room: RoomData, errorSocket?: Socket): boolean {
+    const currentRound = room.game.get_round();
+    if (currentRound === "room" || currentRound === "gameover") {
+        const initResult = JSON.parse(room.game.initialise());
+        if (isError(initResult)) {
+            errorSocket?.emit(initResult.responseType, initResult.message);
+            return false;
+        }
+    }
+
+    clearRoomDraftTimer(room.roomId);
+    room.nextRoundVotes.clear();
+
+    // preround -> preflop
+    const startResult = JSON.parse(room.game.start());
+    if (isError(startResult)) {
+        errorSocket?.emit(startResult.responseType, startResult.message);
+        return false;
+    }
+
+    broadcastNextRoundVotes(room);
+    io.to(room.roomId).emit("gameStarted");
+    broadcastGameState(room, startResult.events);
+    broadcastLobbyUpdate(room);
+    startTurnTransition(room.roomId, room.game, room.config.turnTimeout * 1000);
+    startDraftTransition(room.roomId, room.game);
+    return true;
+}
+
+function reconcileNextRoundVotes(room: RoomData) {
+    const currentRound = room.game.get_round();
+    if (currentRound !== "showdown" && currentRound !== "preround") {
+        return;
+    }
+
+    const payload = getNextRoundVotePayload(room);
+    if (payload.totalHumans > 0 && payload.votedPlayerIds.length * 2 > payload.totalHumans) {
+        startNextHandForRoom(room);
+    } else {
+        io.to(room.roomId).emit("nextRoundVoteUpdate", payload);
+    }
 }
 
 /**
@@ -548,6 +728,9 @@ io.on("connection", (socket: Socket) => {
                             );
 
                         }
+                        if (room.game.get_round() !== "winnerdraft") {
+                            clearRoomDraftTimer(session.roomId);
+                        }
                         broadcastGameState(room, response.events);
                     } else {
                         room.players = room.players.filter(p => p.id !== session.playerId);
@@ -555,11 +738,13 @@ io.on("connection", (socket: Socket) => {
                     }
 
                     room.sessionTokens = room.sessionTokens.filter((token) => token !== sessionToken);
+                    room.nextRoundVotes.delete(session.playerId);
 
                     socket.to(session.roomId).emit("info", `${discPlayerName} disconnected`);
                     broadcastLobbyUpdate(room);
 
                     if (room.roomHostSession === sessionToken) assignNewHost(session.roomId, room);
+                    reconcileNextRoundVotes(room);
 
                     const closeTime = (currentRound === "room") ? earlyLeaveTimeout : playerLeaveTimeout;
                     setTimeout(() => {
@@ -609,6 +794,7 @@ io.on("connection", (socket: Socket) => {
             sessionTokens: [sessionToken],
             roomId,
             chatMessages: [],
+            nextRoundVotes: new Set<number>(),
         };
 
         try {
@@ -692,6 +878,7 @@ io.on("connection", (socket: Socket) => {
             if (!kickedPlayer) return;
 
             room.players = room.players.filter(p => p.id !== pid);
+            room.nextRoundVotes.delete(pid);
             // instantly removes target player
             room.game.force_remove_player(pid);
 
@@ -722,6 +909,7 @@ io.on("connection", (socket: Socket) => {
 
             updateGameConfig(room);
             broadcastLobbyUpdate(room);
+            reconcileNextRoundVotes(room);
         });
     });
 
@@ -838,6 +1026,7 @@ io.on("connection", (socket: Socket) => {
                         socket.join(roomId);
                         socket.emit("joinSuccess", { roomId, sessionToken });
                         broadcastLobbyUpdate(room);
+        reconcileNextRoundVotes(room);
                     } catch (error) {
                         room.players = oldPlayers;
                         room.activeConnections = oldActiveConnections;
@@ -893,6 +1082,7 @@ io.on("connection", (socket: Socket) => {
         socket.to(roomId).emit("info", `${joinedPlayerName} joined the game`);
 
         broadcastLobbyUpdate(room);
+        reconcileNextRoundVotes(room);
     });
 
     socket.on("leaveGame", () => {
@@ -912,6 +1102,7 @@ io.on("connection", (socket: Socket) => {
 
         room.sessionTokens = room.sessionTokens.filter((token) => token !== sessionToken);
         room.players = room.players.filter(p => p.id !== session.playerId);
+        room.nextRoundVotes.delete(session.playerId);
 
         room.game.queue_remove_player(session.playerId);
         updateGameConfig(room);
@@ -928,6 +1119,7 @@ io.on("connection", (socket: Socket) => {
         } catch (e) { }
 
         broadcastLobbyUpdate(room);
+        reconcileNextRoundVotes(room);
     });
 
     socket.on("requestLobbyInfo", () => {
@@ -969,6 +1161,16 @@ io.on("connection", (socket: Socket) => {
                         deadline: timer.deadline,
                     });
                 }
+
+                const draftTimer = roomDraftTimers.get(session.roomId);
+                if (draftTimer && draftTimer.status === "running" && draftTimer.deadline && draftTimer.deadline > Date.now()) {
+                    socket.emit("draftTimerStarted", {
+                        duration: Math.max(0, Math.ceil((draftTimer.deadline - Date.now()) / 1000)),
+                        deadline: draftTimer.deadline,
+                    });
+                }
+
+                socket.emit("nextRoundVoteUpdate", getNextRoundVotePayload(room));
             } catch (e) { }
         });
     });
@@ -1017,6 +1219,7 @@ io.on("connection", (socket: Socket) => {
             state: JSON.parse(room.game.get_game_state(session.playerId)),
         });
         broadcastLobbyUpdate(room);
+        reconcileNextRoundVotes(room);
     });
 
     socket.on("initialiseGame", () => {
@@ -1032,6 +1235,8 @@ io.on("connection", (socket: Socket) => {
                 }
 
                 io.to(session.roomId).emit("gameStart", initialiseResult);
+                room.nextRoundVotes.clear();
+                broadcastNextRoundVotes(room);
                 broadcastGameState(room, initialiseResult.events);
             } catch (e) {
                 io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to initialise the room");
@@ -1046,24 +1251,32 @@ io.on("connection", (socket: Socket) => {
     });
 
     socket.on("startGame", () => {
-        withGameContext(socket, true, (room, session) => {
+        withGameContext(socket, true, (room) => {
+            try {
+                startNextHandForRoom(room, socket);
+            } catch (e) {
+                io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to start the game");
+            }
+        });
+    });
+
+    socket.on("voteNextRound", () => {
+        withGameContext(socket, false, (room, session) => {
             try {
                 const currentRound = room.game.get_round();
-                if (currentRound === "room" || currentRound === "gameover") {
-                    const initResult = JSON.parse(room.game.initialise());
-                    if (isError(initResult)) return socket.emit(initResult.responseType, initResult.message);
+                if (currentRound !== "showdown" && currentRound !== "preround") {
+                    return;
                 }
 
-                // preround -> preflop
-                const startResult = JSON.parse(room.game.start());
-                if (isError(startResult)) return socket.emit(startResult.responseType, startResult.message);
+                if (room.nextRoundVotes.has(session.playerId)) {
+                    room.nextRoundVotes.delete(session.playerId);
+                } else {
+                    room.nextRoundVotes.add(session.playerId);
+                }
 
-                io.to(session.roomId).emit("gameStarted");
-                broadcastGameState(room, startResult.events);
-                broadcastLobbyUpdate(room);
-                startTurnTransition(session.roomId, room.game, room.config.turnTimeout * 1000);
+                reconcileNextRoundVotes(room);
             } catch (e) {
-                io.to(room.roomId).emit("An unexpected error occurred while attempting to start the game");
+                socket.emit("error", "Failed to record next round vote");
             }
         });
     });
@@ -1084,8 +1297,42 @@ io.on("connection", (socket: Socket) => {
                     room.game,
                     room.config.turnTimeout * 1000
                 );
+                startDraftTransition(room.roomId, room.game);
             } catch (err) {
                 socket.emit("error", "Invalid move");
+            }
+        });
+    });
+
+    socket.on("draftReady", () => {
+        withGameContext(socket, false, (room) => {
+            const draftTimer = roomDraftTimers.get(room.roomId);
+            if (!draftTimer || draftTimer.status !== "waiting") return;
+            startDraftCountdown(room.roomId, room.game);
+        });
+    });
+
+    socket.on("winnerDraftPick", (choiceIndex: number) => {
+        withGameContext(socket, false, (room, session) => {
+            try {
+                if (typeof choiceIndex !== "number" || !Number.isInteger(choiceIndex)) {
+                    return socket.emit("error", "Invalid draft selection");
+                }
+
+                const pickResult = JSON.parse(room.game.pick_winner_draft(
+                    session.playerId,
+                    choiceIndex
+                )) as MoveResult | ErrorResponse;
+
+                if (isError(pickResult)) return socket.emit(pickResult.responseType, pickResult.message);
+
+                if (room.game.get_round() !== "winnerdraft") {
+                    clearRoomDraftTimer(room.roomId);
+                }
+
+                broadcastGameState(room, pickResult.events);
+            } catch (err) {
+                socket.emit("error", "Invalid draft selection");
             }
         });
     });

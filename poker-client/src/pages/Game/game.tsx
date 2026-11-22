@@ -28,6 +28,7 @@ import {
     parseModifier,
 } from '../../components/Card/card';
 import { EndGameModal } from '../../components/EndGameModal/endgamemodal';
+import { WinnerDraftModal } from '../../components/WinnerDraftModal/winnerdraftmodal';
 import { ActiveModifiers } from '../../components/ActiveModifiers/activemodifiers';
 import { GameHeader } from '../../components/GameHeader/gameheader';
 import { Chat } from '../../components/Chat/chat';
@@ -88,6 +89,16 @@ export function Game() {
     const activeTurnPlayerIdRef = useRef<number | null>(null);
     const roundNameRef = useRef<string | null>(null);
     const [turnStateTick, setTurnStateTick] = useState<number>(0);
+
+    const [draftTimeRemaining, setDraftTimeRemaining] = useState<number | null>(null);
+    const draftTimerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const draftDeadlineRef = useRef<number | null>(null);
+    const [draftStateTick, setDraftStateTick] = useState<number>(0);
+    const [nextRoundVotes, setNextRoundVotes] = useState<{
+        votedPlayerIds: number[];
+        required: number;
+        totalHumans: number;
+    }>({ votedPlayerIds: [], required: 1, totalHumans: 1 });
 
     const specialDeckRef = useRef<HTMLDivElement | null>(null);
 
@@ -416,9 +427,14 @@ export function Game() {
 
                 const { events, nextState } = update;
                 const previousState = gameStateRef.current;
-                const isNewHand = previousState && (previousState.roundName === "preround" || previousState.roundName === "room" || previousState.roundName === "showdown");
+                const isEndRound = (r?: string) => r === "showdown" || r === "winnerdraft";
+                const isNewHand = previousState && (
+                    previousState.roundName === "preround" ||
+                    previousState.roundName === "room" ||
+                    isEndRound(previousState.roundName)
+                ) && (nextState.roundName === "preflop" || nextState.roundName === "preround");
                 const enteredPreflop = isNewHand || (nextState.roundName === "preflop" && previousState?.roundName !== "preflop");
-                const enteredShowdown = nextState.roundName === "showdown" && previousState?.roundName !== "showdown";
+                const enteredShowdown = isEndRound(nextState.roundName) && !isEndRound(previousState?.roundName);
 
                 const applyState = (state: GameStateData) => {
                     gameStateRef.current = state;
@@ -462,7 +478,7 @@ export function Game() {
                     await nextFrame();
                 };
 
-                if (enteredPreflop || (previousState && previousState.roundName === "showdown")) {
+                if (enteredPreflop) {
                     await clearTableStateForNewHand(nextState);
                 }
 
@@ -548,6 +564,7 @@ export function Game() {
                     const isSelf = actorId === currentMyId;
 
                     let slotElem: HTMLElement | null = null;
+                    let slotCardInnerElem: HTMLElement | null = null;
                     let playedSlotIndex = isSelf ? (lastPlayedSpecialSlotIndexRef.current ?? selectedSpecialCardIndex) : null;
                     if (isSelf) lastPlayedSpecialSlotIndexRef.current = null;
 
@@ -595,7 +612,10 @@ export function Game() {
 
                         startX = slotCenterX - cardWidth / 2;
                         startY = slotCenterY - cardHeight / 2;
-                        slotElem.style.opacity = "0";
+                        slotCardInnerElem = slotElem.querySelector(`.${styles.cardInner}`) as HTMLElement | null;
+                        if (slotCardInnerElem) {
+                            slotCardInnerElem.style.opacity = "0";
+                        }
                     } else if (!isSelf) {
                         const seatElem = document.querySelector(`[data-seat-id="${actorId}"]`);
                         if (seatElem) {
@@ -653,8 +673,8 @@ export function Game() {
                                 }
                             }
                         }
-                        if (slotElem) {
-                            slotElem.style.opacity = "";
+                        if (slotCardInnerElem) {
+                            slotCardInnerElem.style.opacity = "";
                         }
                         if (animCard.parentNode) {
                             animCard.parentNode.removeChild(animCard);
@@ -663,9 +683,10 @@ export function Game() {
                 };
 
                 const animateAction = async (event: MoveEvent, trackedBets: Map<number, number>) => {
-                    const action = event.action.type === "action" ? event.action.action : null;
+                    const actionEvent = event.action.type === "action" ? event.action : null;
+                    const action = actionEvent?.action ?? null;
 
-                    if (!action) return;
+                    if (!action || !actionEvent) return;
 
                     switch (action.type) {
                         case "raise":
@@ -677,10 +698,13 @@ export function Game() {
                             if (!nextPlayer) return;
 
                             const priorBet = trackedBets.get(event.actorId) ?? 0;
-                            const targetBet = nextPlayer.totalBet;
-                            const betDelta = Math.max(0, targetBet - priorBet);
+                            const betDelta = actionEvent.betDelta !== undefined
+                                ? Math.max(0, actionEvent.betDelta)
+                                : Math.max(0, nextPlayer.totalBet - priorBet);
+                            const targetTotalBet = actionEvent.totalBet ?? (priorBet + betDelta);
+                            const targetRoundBet = actionEvent.roundBet ?? nextPlayer.roundBet;
 
-                            trackedBets.set(event.actorId, targetBet);
+                            trackedBets.set(event.actorId, targetTotalBet);
 
                             const playSeatCallAnimation = async () => {
                                 const seatElem = seatRefs.current[event.actorId!];
@@ -712,7 +736,7 @@ export function Game() {
                                 seatAnimPromise ?? Promise.resolve(),
                                 wait(delay + timing.betChipAdded)
                             ]);
-                            await updateIntermediateState(event.actorId, -betDelta, nextPlayer.roundBet, nextPlayer.totalBet);
+                            await updateIntermediateState(event.actorId, -betDelta, targetRoundBet, targetTotalBet);
 
                             return;
                         }
@@ -1103,6 +1127,10 @@ export function Game() {
                             return;
                         }
 
+                        case "draftSkippedFull":
+                            showToast("Winner draft skipped: special card slots are full", "warning");
+                            return;
+
                         case "swapBot":
                         case "swapHuman":
                         case "action":
@@ -1250,9 +1278,11 @@ export function Game() {
             } else {
                 const currentTurnPlayer = gameStateRef.current?.players.find(p => p.isTurn);
                 const currentRound = gameStateRef.current?.roundName;
-                const isRoundActive = currentRound && currentRound !== "room" && currentRound !== "preround" && currentRound !== "showdown" && currentRound !== "gameover";
+                const isRoundActive = currentRound && currentRound !== "room" && currentRound !== "preround" && currentRound !== "winnerdraft" && currentRound !== "showdown" && currentRound !== "gameover";
                 if (currentTurnPlayer && currentTurnPlayer.id === myIdRef.current && isRoundActive) {
                     socket?.emit("clientReady");
+                } else if (currentRound === "winnerdraft") {
+                    socket?.emit("draftReady");
                 }
             }
         }
@@ -1289,6 +1319,18 @@ export function Game() {
                     turnStartTimeRef.current = null;
                     setTurnTimeRemaining(null);
                     setTurnStateTick(t => t + 1);
+
+                    if (nextRound !== "winnerdraft") {
+                        draftDeadlineRef.current = null;
+                        setDraftTimeRemaining(null);
+                        setDraftStateTick(t => t + 1);
+                    }
+
+                    if (nextRound !== "showdown" && nextRound !== "preround") {
+                        setNextRoundVotes(prev =>
+                            prev.votedPlayerIds.length > 0 ? { ...prev, votedPlayerIds: [] } : prev
+                        );
+                    }
                 }
             }
 
@@ -1310,10 +1352,26 @@ export function Game() {
             setTurnStateTick(t => t + 1);
         };
 
+        const handleDraftTimerStarted = (data: { duration: number; deadline: number }) => {
+            draftDeadlineRef.current = data.deadline;
+            setDraftTimeRemaining(data.duration);
+            setDraftStateTick(t => t + 1);
+        };
+
+        const handleNextRoundVoteUpdate = (data: {
+            votedPlayerIds: number[];
+            required: number;
+            totalHumans: number;
+        }) => {
+            setNextRoundVotes(data);
+        };
+
         socket.on("clientInfo", handleClientInfo);
         socket.on("lobbyUpdate", handleLobbyUpdate);
         socket.on("gameUpdate", handleGameUpdate);
         socket.on("turnTimerStarted", handleTurnTimerStarted);
+        socket.on("draftTimerStarted", handleDraftTimerStarted);
+        socket.on("nextRoundVoteUpdate", handleNextRoundVoteUpdate);
         socket.on("info", handleInfo);
         socket.on("error", handleError);
         socket.on("warning", handleWarning);
@@ -1324,6 +1382,8 @@ export function Game() {
             socket.off("lobbyUpdate", handleLobbyUpdate);
             socket.off("gameUpdate", handleGameUpdate);
             socket.off("turnTimerStarted", handleTurnTimerStarted);
+            socket.off("draftTimerStarted", handleDraftTimerStarted);
+            socket.off("nextRoundVoteUpdate", handleNextRoundVoteUpdate);
             socket.off("info", handleInfo);
             socket.off("error", handleError);
             socket.off("warning", handleWarning);
@@ -1334,6 +1394,11 @@ export function Game() {
     const startNextRound = () => {
         if (!socket || !isHost) return;
         socket.emit("startGame");
+    };
+
+    const voteNextRound = () => {
+        if (!socket) return;
+        socket.emit("voteNextRound");
     };
 
     const leaveGame = () => {
@@ -1419,7 +1484,7 @@ export function Game() {
 
         lastPlayedSpecialSlotIndexRef.current = selectedSpecialCardIndex;
 
-        sendPlayerMove(`special ${selectedSpecialCardValue} ${String(targetId ?? 0)} ${String(cardIndex ?? 0)}`);
+        sendPlayerMove(`special ${selectedSpecialCardValue} ${targetId ?? "none"} ${cardIndex ?? "none"}`);
 
         cancelSelectedSpecialCard();
     };
@@ -1449,7 +1514,12 @@ export function Game() {
         socket.emit("playerMove", moveStr);
     };
 
-    const isMyTurn = meInGame?.isTurn && gameState?.roundName !== "room" && gameState?.roundName !== "preround" && gameState?.roundName !== "showdown";
+    const pickWinnerDraft = (choiceIndex: number) => {
+        if (!socket) return;
+        socket.emit("winnerDraftPick", choiceIndex);
+    };
+
+    const isMyTurn = meInGame?.isTurn && gameState?.roundName !== "room" && gameState?.roundName !== "preround" && gameState?.roundName !== "winnerdraft" && gameState?.roundName !== "showdown";
     const currentBetToCall = (gameState?.highestBet || 0) - (meInGame?.roundBet || 0);
 
     const anteMult = gameState?.modifierVars?.anteMult ?? 1;
@@ -1589,13 +1659,65 @@ export function Game() {
     }, [turnStateTick, config?.turnTimeout]);
 
     useEffect(() => {
-        if (!isMyTurn || gameState?.roundName === "showdown" || gameState?.roundName === "preround" || gameState?.roundName === "room") {
+        if (draftTimerIntervalRef.current) {
+            clearInterval(draftTimerIntervalRef.current);
+            draftTimerIntervalRef.current = null;
+        }
+
+        if (roundNameRef.current !== "winnerdraft" || !draftDeadlineRef.current) {
+            setDraftTimeRemaining(null);
+            return;
+        }
+
+        const updateDraftTimer = () => {
+            if (!draftDeadlineRef.current) {
+                setDraftTimeRemaining(null);
+                if (draftTimerIntervalRef.current) {
+                    clearInterval(draftTimerIntervalRef.current);
+                    draftTimerIntervalRef.current = null;
+                }
+                return;
+            }
+
+            const remainingMs = draftDeadlineRef.current - Date.now();
+            const remaining = Math.max(0, Math.ceil(remainingMs / 1000));
+            setDraftTimeRemaining(remaining);
+
+            if (remaining <= 0 && draftTimerIntervalRef.current) {
+                clearInterval(draftTimerIntervalRef.current);
+                draftTimerIntervalRef.current = null;
+            }
+        };
+
+        updateDraftTimer();
+        draftTimerIntervalRef.current = setInterval(updateDraftTimer, 50);
+
+        return () => {
+            if (draftTimerIntervalRef.current) {
+                clearInterval(draftTimerIntervalRef.current);
+                draftTimerIntervalRef.current = null;
+            }
+        };
+    }, [draftStateTick]);
+
+    useEffect(() => {
+        if (!isMyTurn || gameState?.roundName === "winnerdraft" || gameState?.roundName === "showdown" || gameState?.roundName === "preround" || gameState?.roundName === "room") {
             cancelSelectedSpecialCard();
         }
     }, [gameState?.roundName, isMyTurn]);
 
     return (
         <div className={styles.gameContainer}>
+            <WinnerDraftModal
+                options={!isAnimating && gameState?.roundName === "winnerdraft" ? gameState.winnerDraftOptions : null}
+                timeRemaining={draftTimeRemaining}
+                blindSize={config?.blindSize}
+                anteMult={gameState?.modifierVars?.anteMult}
+                gambleSuccessChance={gameState?.modifierVars?.gambleSuccessChance}
+                boxBorderColour={boxBorderColour}
+                onPick={pickWinnerDraft}
+            />
+
             <EndGameModal
                 gameState={gameState}
                 myId={myId}
@@ -1711,8 +1833,16 @@ export function Game() {
                         </div>
                     )}
 
-                {gameState?.players.map((p, seatIndex) => {
-                    const totalSeats = gameState.players.length;
+                {(() => {
+                    const players = gameState?.players ?? [];
+                    const totalSeats = players.length;
+                    const myPlayerIndex = myId !== null ? players.findIndex(pl => pl.id === myId) : -1;
+                    const seatOffset = myPlayerIndex > 0 ? myPlayerIndex : 0;
+                    const orderedPlayers = seatOffset > 0
+                        ? [...players.slice(seatOffset), ...players.slice(0, seatOffset)]
+                        : players;
+
+                    return orderedPlayers.map((p, seatIndex) => {
                     const baseAngle = (seatIndex / totalSeats) * 2 * Math.PI + Math.PI / 2;
                     const rx = 47;
                     const ry = 36.5;
@@ -1743,7 +1873,7 @@ export function Game() {
                             ref={(el) => { seatRefs.current[p.id] = el; }}
                             className={`
                                 ${styles.playerSeat}  
-                                ${p.folded || (p.chips === 0 && p.holeCards.length === 0) ? styles.foldedSeat : ''}  
+                                ${p.folded || (p.chips === 0 && gameState?.roundName === "preround") ? styles.foldedSeat : ''}  
                                 ${canTargetPlayer ? styles.targetableSeat : ''} 
                                 ${isSelectedTarget ? styles.selectedTargetSeat : ''}
                             `}
@@ -1840,7 +1970,8 @@ export function Game() {
                             </PixelBox>
                         </div>
                     );
-                })}
+                });
+                })()}
             </div>
             </main>
 
@@ -1876,7 +2007,7 @@ export function Game() {
                                                     onMouseEnter={() => card ? setHoveredSpecialIndex(index) : undefined}
                                                     onMouseLeave={() => setHoveredSpecialIndex(null)}
                                                 >
-                                                    {card && (card as any).visibility === "visible" && (card as any).value && (isSelected || hoveredSpecialIndex === index) && (() => {
+                                                    {card && (card as any).visibility === "visible" && (card as any).value && hoveredSpecialIndex === index && (() => {
                                                         const cardInfo = getSpecialCardInfo(
                                                             (card as any).value,
                                                             config?.blindSize,
@@ -1887,7 +2018,7 @@ export function Game() {
                                                             <div
                                                                 className={[
                                                                     styles.specialSelectionText,
-                                                                    isSelected ? styles.active : styles.hovered,
+                                                                    styles.hovered,
                                                                 ].join(" ")}
                                                             >
                                                                 <strong>{cardInfo.label}</strong>
@@ -2026,16 +2157,38 @@ export function Game() {
                         </button>
                     )}
 
+                    {gameState?.roundName === "winnerdraft" && !(gameState.winnerDraftOptions && gameState.winnerDraftOptions.length > 0) && (
+                        <div className={styles.waitingNotice}>
+                            Winner is choosing a special card{draftTimeRemaining !== null ? ` (${draftTimeRemaining}s)` : "..."}
+                        </div>
+                    )}
+
                     {(gameState?.roundName === "showdown" || gameState?.roundName === "preround") && (
                         <>
                             {isHost ? (
                                 <button type="button" className={styles.btnWrapper} onClick={startNextRound}>
                                     <PixelBox innerClassName={`${styles.btnInner} ${styles.btnPrimary}`} borderColour={boxBorderColour}>
-                                        Start Next Hand
+                                        {nextRoundVotes.votedPlayerIds.length > 0
+                                            ? `Start Next Hand (${nextRoundVotes.votedPlayerIds.length}/${nextRoundVotes.required} voted)`
+                                            : "Start Next Hand"}
                                     </PixelBox>
                                 </button>
                             ) : (
-                                <div className={styles.waitingNotice}>Waiting for Host to start next hand...</div>
+                                (() => {
+                                    const hasVoted = myId !== null && nextRoundVotes.votedPlayerIds.includes(myId);
+                                    return (
+                                        <button type="button" className={styles.btnWrapper} onClick={voteNextRound}>
+                                            <PixelBox
+                                                innerClassName={`${styles.btnInner} ${hasVoted ? '' : styles.btnPrimary}`}
+                                                borderColour={boxBorderColour}
+                                            >
+                                                {hasVoted
+                                                    ? `Voted (${nextRoundVotes.votedPlayerIds.length}/${nextRoundVotes.required})`
+                                                    : `Start Hand (${nextRoundVotes.votedPlayerIds.length}/${nextRoundVotes.required})`}
+                                            </PixelBox>
+                                        </button>
+                                    );
+                                })()
                             )}
                         </>
                     )}

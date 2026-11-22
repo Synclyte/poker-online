@@ -157,8 +157,21 @@ impl RoundModifiers {
 
     fn combine_or_add_modifiers(&mut self, modifier: Modifier) {
         for i in 0..self.active.len() {
-            if self.active[i].effect != modifier.effect || !self.active[i].expiry.type_equal(&modifier.expiry) {
+            let effects_match = match (&self.active[i].effect, &modifier.effect) {
+                (ModifierEffect::AnteMultiplier { .. }, ModifierEffect::AnteMultiplier { .. }) => true,
+                (a, b) => a == b,
+            };
+
+            if !effects_match || !self.active[i].expiry.type_equal(&modifier.expiry) {
                 continue;
+            }
+
+            if let (
+                ModifierEffect::AnteMultiplier { multiplier: first_mult },
+                ModifierEffect::AnteMultiplier { multiplier: second_mult },
+            ) = (&mut self.active[i].effect, &modifier.effect)
+            {
+                *first_mult *= *second_mult;
             }
 
             self.active[i].expiry = match (self.active[i].expiry, modifier.expiry) {
@@ -312,6 +325,12 @@ impl Modifier {
     }    
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct WinnerDraft {
+    pub(crate) player_id: usize,
+    pub(crate) options: Vec<SpecialCard>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum SpecialCard {
@@ -364,13 +383,18 @@ impl SpecialCard {
         let t_id = target_id.unwrap_or(usize::MAX);
         let c_index = card_index.unwrap_or(usize::MAX);
 
-        let t_idx_res = game.get_player_index(t_id);
-        // reject if invalid player id, invalid target id, or target is folded
-        if player_id != usize::MAX && game.get_player_index(player_id).is_err()
-            || t_id != usize::MAX && t_idx_res.is_err()
-            || t_idx_res.is_ok_and(|idx| game.players[idx].folded)
-        {
+        if player_id != usize::MAX && game.get_player_index(player_id).is_err() {
             return Err(GameError::InvalidTargetPlayer);
+        }
+
+        if matches!(self, SpecialCard::RevealOpponentCard | SpecialCard::HandSwap) {
+            let t_idx_res = game.get_player_index(t_id);
+            if t_id == usize::MAX
+                || t_idx_res.is_err()
+                || t_idx_res.is_ok_and(|idx| game.players[idx].folded)
+            {
+                return Err(GameError::InvalidTargetPlayer);
+            }
         }
 
         fn check_player_owns_card(player_id: usize, c_index: usize, game: &Game) -> Result<(), GameError> {
@@ -757,16 +781,34 @@ impl SpecialCard {
             luck *= 1.4;
         }
 
-        let mut special_card_sums: Vec<(SpecialCard, f64)> = Vec::new();
-        let mut sum: f64 = 0.0;
-        // build binary searchable sum vector
-        for (card, weight_fn) in SPECIAL_CARD_WEIGHT_FNS {
-            special_card_sums.push((card, sum));
-            sum += weight_fn(luck);
-        }
-
+        let active_players = game.players.iter().filter(|p| !p.folded).count().max(1) as f64;
         let mut cards_drawn: Vec<SpecialCard> = Vec::new();
         for _ in 0..count {
+            if game.rounds_since_ante_up >= ANTE_UP_PITY_MAX_ROUNDS {
+                game.record_special_card_received(SpecialCard::AnteUp);
+                cards_drawn.push(SpecialCard::AnteUp);
+                continue;
+            }
+
+            let pity_bonus = if game.rounds_since_ante_up > 0 {
+                3.0 * (game.rounds_since_ante_up as f64).powi(2) / active_players
+            } else {
+                0.0
+            };
+
+            let mut special_card_sums: Vec<(SpecialCard, f64)> = Vec::new();
+            let mut sum: f64 = 0.0;
+            // build binary searchable sum vector
+            for (card, weight_fn) in SPECIAL_CARD_WEIGHT_FNS {
+                special_card_sums.push((card, sum));
+                // anteup is a special case - should become more likely over time
+                let mut weight = weight_fn(luck);
+                if card == SpecialCard::AnteUp {
+                    weight += pity_bonus;
+                }
+                sum += weight;
+            }
+
             // and then get the result of the roll
             let roll = game.ctx.rng.random_range::<f64, _>(0.0..sum);
             let card_idx = match special_card_sums.binary_search_by(|(_, s)| s.total_cmp(&roll)) {
@@ -774,12 +816,90 @@ impl SpecialCard {
                 Ok(i) => i
             };
 
-            cards_drawn.push(special_card_sums[card_idx].0);
+            let drawn_card = special_card_sums[card_idx].0;
+            game.record_special_card_received(drawn_card);
+            cards_drawn.push(drawn_card);
         }
 
         cards_drawn
     }
+
+    /**
+     * Draws count distinct special card options for a winner draft
+     * Card quality is scaled by pot ratio (the relative amount of value in the current pot)
+     */
+    pub(crate) fn draw_winner_draft_options(count: usize, pot_ratio: f64, game: &mut Game) -> Vec<SpecialCard> {
+        let linear_t = ((pot_ratio - 0.02) / 0.45).clamp(0.0, 1.0);
+        let t = linear_t * linear_t;
+        let high_mult = 0.02 + 2.98 * t;
+        let mid_mult = 0.30 + 1.20 * t;
+        let low_mult = 1.80 - 1.40 * t;
+
+        let mut pool: Vec<(SpecialCard, f64)> = vec![
+            // good cards
+            (SpecialCard::PotMult, 3.0 * high_mult),
+            (SpecialCard::ChipBoost, 4.0 * high_mult),
+            (SpecialCard::ChipGamble, 2.5 * high_mult),
+            (SpecialCard::WithdrawBet, 2.2 * high_mult),
+            (SpecialCard::Joker, 2.5 * high_mult),
+            (SpecialCard::HandSwap, 2.2 * high_mult),
+            (SpecialCard::AnteUp, 1.5 * high_mult),
+            (SpecialCard::Blackjack, 0.4 * high_mult),
+            // mid-tier cards
+            (SpecialCard::ReplaceCardSelf, 3.5 * mid_mult),
+            (SpecialCard::RevealOpponentCard, 3.5 * mid_mult),
+            (SpecialCard::DrawCardSelf, 2.0 * mid_mult),
+            (SpecialCard::DrawCardCommunity, 2.0 * mid_mult),
+            (SpecialCard::ReplaceCardCommunity, 2.5 * mid_mult),
+            // situational cards
+            (SpecialCard::RemoveCardCommunity, 2.0 * low_mult),
+            (SpecialCard::RaiseBlock, 2.8 * low_mult),
+            (SpecialCard::SpecialBlock, 2.8 * low_mult),
+            (SpecialCard::DrawHeart, 3.2 * low_mult),
+            (SpecialCard::DrawSpade, 3.2 * low_mult),
+            (SpecialCard::DrawDiamond, 3.2 * low_mult),
+            (SpecialCard::DrawClub, 3.2 * low_mult),
+            (SpecialCard::DrawFace, 2.6 * low_mult),
+            (SpecialCard::DrawHigh, 2.6 * low_mult),
+            (SpecialCard::DrawLow, 2.6 * low_mult),
+            (SpecialCard::DrawHigherThanLast, 2.4 * low_mult),
+            (SpecialCard::DrawLowerThanLast, 2.4 * low_mult),
+            (SpecialCard::DrawSameSuitAsLast, 2.4 * low_mult),
+            (SpecialCard::InvalidateFlush, 2.2 * low_mult),
+            (SpecialCard::InvalidateStraight, 2.2 * low_mult),
+            (SpecialCard::InvalidateThreeOfAKind, 2.2 * low_mult),
+            (SpecialCard::InvalidateTwoPair, 2.2 * low_mult),
+            (SpecialCard::InvalidateFullHouse, 2.2 * low_mult),
+        ];
+
+        let target_count = count.min(pool.len());
+        let mut chosen = Vec::with_capacity(target_count);
+
+        for _ in 0..target_count {
+            let total_weight: f64 = pool.iter().map(|(_, w)| *w).sum();
+            if total_weight <= 0.0 {
+                break;
+            }
+
+            let mut roll = game.ctx.rng.random_range::<f64, _>(0.0..total_weight);
+            let mut picked_idx = pool.len() - 1;
+            for (idx, (_, weight)) in pool.iter().enumerate() {
+                if roll < *weight {
+                    picked_idx = idx;
+                    break;
+                }
+                roll -= *weight;
+            }
+
+            let (card, _) = pool.swap_remove(picked_idx);
+            chosen.push(card);
+        }
+
+        chosen
+    }
 }
+
+pub(crate) const ANTE_UP_PITY_MAX_ROUNDS: u32 = 12;
 
 // weight functions for special cards - determines end draw probability
 // takes a luck value l, determined through several factors, and produces a card. generally, better cards will scale better with luck
@@ -791,7 +911,7 @@ static SPECIAL_CARD_WEIGHT_FNS: [(SpecialCard, fn(f64) -> f64); 31] = [
     (SpecialCard::DrawCardCommunity, |l| 1.0 * l),
     (SpecialCard::RevealOpponentCard, |l| 4.0 * l),
     (SpecialCard::WithdrawBet, |l| 0.9 * l.powi(2)),
-    (SpecialCard::AnteUp, |l| 2.0 * l.powi(2)),
+    (SpecialCard::AnteUp, |l| 1.0 * l),
     (SpecialCard::PotMult, |l| 1.5 * l.powi(2)),
     (SpecialCard::RaiseBlock, |_| 10.0),
     (SpecialCard::SpecialBlock, |_| 10.0),
@@ -918,6 +1038,10 @@ pub(crate) fn give_special_card(special_card: SpecialCard, count: usize, ignore_
             game.players[p_id].special_cards.push(special_card);
             given_cards += 1;
         }
+    }
+
+    if given_cards > 0 {
+        game.record_special_card_received(special_card);
     }
 
     events.push(MoveEvent { 

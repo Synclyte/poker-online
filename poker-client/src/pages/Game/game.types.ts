@@ -21,7 +21,7 @@ export type PlayerAction =
     };
 
 export type MoveAction =
-    | { type: "action"; action: PlayerAction }
+    | { type: "action"; action: PlayerAction; betDelta?: number; roundBet?: number; totalBet?: number }
     | { type: "dealHole"; count: number }
     | { type: "removeHole"; index: number }
     | { type: "dealCommunity"; count: number }
@@ -35,7 +35,8 @@ export type MoveAction =
     | { type: "swapBot" }
     | { type: "swapHuman" }
     | { type: "replaceCommunity"; index: number }
-    | { type: "replaceHole"; index: number };
+    | { type: "replaceHole"; index: number }
+    | { type: "draftSkippedFull" };
 
 export interface GameConfig {
     maxPlayers: number;
@@ -88,6 +89,8 @@ export interface GameStateData {
     };
     gamesPlayed?: number;
     maxBet?: number | null;
+    winnerDraftOptions?: string[] | null;
+    winnerDraftPendingPlayers?: number[];
 }
 
 export interface MoveResult {
