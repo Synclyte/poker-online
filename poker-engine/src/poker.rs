@@ -248,6 +248,7 @@ impl ExpandedCard {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum HandType {
     None,
     HighCard,

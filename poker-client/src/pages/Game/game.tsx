@@ -572,7 +572,7 @@ export function Game() {
                         const currentPlayer = gameStateRef.current?.players.find(p => p.id === actorId);
                         if (currentPlayer) {
                             const idx = currentPlayer.specialCards.findIndex(
-                                c => c && c.visibility === "visible" && c.value && c.value.toLowerCase() === cardValue.toLowerCase()
+                                c => c && c.visibility === "visible" && c.value && c.value === cardValue
                             );
                             if (idx !== -1) playedSlotIndex = idx;
                         }
@@ -664,7 +664,7 @@ export function Game() {
                             const player = newState.players.find(p => p.id === actorId);
                             if (player) {
                                 const idx = player.specialCards.findIndex(
-                                    c => c && c.visibility === "visible" && c.value.toLowerCase() === cardValue.toLowerCase()
+                                    c => c && c.visibility === "visible" && c.value === cardValue
                                 );
                                 if (idx !== -1) {
                                     player.specialCards.splice(idx, 1);
@@ -1551,8 +1551,10 @@ export function Game() {
     }, [minRaisePossible, maxRaisePossible]);
 
     const activeModifiers: ActiveModifierInfo[] = useMemo(() => {
-        return (gameState?.modifiers ?? []).map((m: any, idx: number) => parseModifier(m, idx));
-    }, [gameState?.modifiers]);
+        return (gameState?.modifiers ?? []).map((m: any, idx: number) =>
+            parseModifier(m, idx, config?.blindSize, gameState?.modifierVars?.anteMult)
+        );
+    }, [gameState?.modifiers, config?.blindSize, gameState?.modifierVars?.anteMult]);
 
     const [displayedModifiers, setDisplayedModifiers] = useState<(ActiveModifierInfo & { isRemoving?: boolean })[]>([]);
 
@@ -1801,7 +1803,7 @@ export function Game() {
                             containerClassName={styles.communityCards}
                             renderCard={(card, idx) => {
                                 const selectedSpecialInfo = selectedSpecialCardValue ? getSpecialCardInfo(selectedSpecialCardValue) : null;
-                                const canTargetCommunity = selectedSpecialInfo?.target === "communityCard" && (card !== null || selectedSpecialCardValue === "DrawCardCommunity");
+                                const canTargetCommunity = selectedSpecialInfo?.target === "communityCard" && (card !== null || selectedSpecialCardValue === "draw_card_community");
                                 const isSelectedCard = canTargetCommunity && selectedTargetCardIndex === idx;
 
                                 return (

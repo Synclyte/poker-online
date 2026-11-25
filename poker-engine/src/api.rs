@@ -187,11 +187,11 @@ pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
 
         let full_cards = [&game.community[..], &p.cards[..]].concat();
         let hand_type_str = if !p.folded && !full_cards.is_empty() && (p.id == viewer_id || is_showdown) {
-            if game.modifiers.blackjack_active() {
+            if game.special.blackjack_active() {
                 let score = special::evaluate_blackjack_hand(&p.cards);
                 format!("{}", if score == -1 { "Bust".to_string() } else { score.to_string() })
             } else {
-                let hand_eval = Hand::new(&full_cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+                let hand_eval = Hand::new(&full_cards, &game.ctx.hand_fns, &game.special.invalidated_hands(), game.ctx.hand_size);
                 hand_eval.hand_type.to_string()
             }
         } else {
@@ -215,7 +215,7 @@ pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
 
     let pots: Vec<i32> = game.pots.iter().map(|p| p.amount).collect();
     let total_pot: i32 = pots.iter().sum::<i32>() + game.round_pool;
-    let visible_modifiers = game.modifiers.active
+    let visible_modifiers = game.special.active_modifiers()
         .iter()
         .filter_map(|m| {
             if m.effect.is_visible(viewer_id) {
@@ -237,9 +237,9 @@ pub(crate) fn view_game_state(game: &Game, viewer_id: usize) -> GameState {
         players: player_states,
         modifiers: visible_modifiers,
         modifier_vars: ModifierDisplayValues { 
-            pot_mult: game.modifiers.vars.pot_multiplier, 
-            ante_mult: game.modifiers.vars.ante_multiplier, 
-            gamble_success_chance: game.modifiers.vars.gamble_success_chance,
+            pot_mult: game.special.pot_multiplier(), 
+            ante_mult: game.special.ante_multiplier(), 
+            gamble_success_chance: game.special.gamble_success_chance(), 
         },
         games_played: game.games_played,
         max_bet: game.get_current_max_bet(),

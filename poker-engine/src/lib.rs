@@ -42,6 +42,7 @@ pub enum GameError {
     DuplicateConfigID,
     PrimaryMoveAlreadyMade,
     HandSwapFailed,
+    CardAlreadyVisible,
 }
 impl fmt::Display for GameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -67,6 +68,7 @@ impl fmt::Display for GameError {
             Self::DuplicateConfigID => "Provided configuration contained duplicate user IDs",
             Self::PrimaryMoveAlreadyMade => "Already performed primary action",
             Self::HandSwapFailed => "Hand swap failed: target has better hand",
+            Self::CardAlreadyVisible => "Target card is already revealed to you",
         };
 
         f.write_str(message)
@@ -75,7 +77,11 @@ impl fmt::Display for GameError {
 impl GameError {
     pub fn error_type(&self) -> ErrorType {
         match self {
-            Self::RaiseBlocked | Self::SpecialCardsBlocked | Self::SpecialCardsFull | Self::HandSwapFailed => ErrorType::Warning,
+            Self::RaiseBlocked
+            | Self::SpecialCardsBlocked
+            | Self::SpecialCardsFull
+            | Self::HandSwapFailed
+            | Self::CardAlreadyVisible => ErrorType::Warning,
             _ => ErrorType::Error
         }
     }
@@ -378,7 +384,7 @@ pub struct Pot {
     pub players: Vec<usize>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MoveEvent {
     pub actor_id: Option<usize>,
@@ -386,7 +392,7 @@ pub(crate) struct MoveEvent {
     pub private: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub(crate) enum MoveAction {
     Action {
@@ -424,11 +430,9 @@ pub struct Game {
     pub(crate) deck: Vec<ExpandedCard>,
     pub(crate) community: Vec<ExpandedCard>,
     pub(crate) winning_hand_type: String,
-    pub(crate) modifiers: RoundModifiers,
+    pub(crate) special: SpecialState,
     pub(crate) winner_ids: Vec<usize>,
     pub(crate) pending_drafts: Vec<WinnerDraft>,
-    pub(crate) rounds_since_ante_up: u32,
-    pub(crate) ante_up_drawn_this_hand: bool,
 }
 impl Game {
     /**
@@ -463,11 +467,9 @@ impl Game {
             deck, 
             community: Vec::new(),
             winning_hand_type: String::new(),
-            modifiers: RoundModifiers::default(),
+            special: SpecialState::default(),
             winner_ids: Vec::new(),
             pending_drafts: Vec::new(),
-            rounds_since_ante_up: 0,
-            ante_up_drawn_this_hand: false,
         }
     }
 
@@ -529,7 +531,7 @@ impl Game {
         if mult == 0 {
             return None;
         }
-        let effective_blind = ((self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32).max(1);
+        let effective_blind = ((self.ctx.blind_size as f64 * self.special.ante_multiplier()) as i32).max(1);
         Some(effective_blind * mult as i32)
     }
 
@@ -593,10 +595,8 @@ impl Game {
         self.round_pool = 0;
         self.winning_hand_type.clear();
         self.dealer_index = 0;
-        self.modifiers = RoundModifiers::default();
+        self.special = SpecialState::default();
         self.pending_drafts.clear();
-        self.rounds_since_ante_up = 0;
-        self.ante_up_drawn_this_hand = false;
 
         Ok(())
     }
@@ -610,13 +610,13 @@ impl Game {
             Round::Preround => self.start_new_hand(&mut events),
             Round::WinnerDraft => {
                 events.extend(self.timeout_winner_draft());
-                self.end_hand();
+                self.end_hand(&mut events);
                 if self.round != Round::GameEnd && self.round != Round::Room {
                     self.start_new_hand(&mut events);
                 }
             }
             Round::Showdown => {
-                self.end_hand();
+                self.end_hand(&mut events);
                 if self.round != Round::GameEnd && self.round != Round::Room {
                     self.start_new_hand(&mut events);
                 }
@@ -789,7 +789,7 @@ impl Game {
 
             let turn_complete = self.current_turn_complete();
             let current_player = &self.players[self.turn_index];
-            let _can_play_specials = !current_player.special_cards.is_empty() && !self.modifiers.specials_blocked();
+            let _can_play_specials = !current_player.special_cards.is_empty() && !self.special.specials_blocked();
 
             if !turn_complete {
                 match current_player.player_type {
@@ -844,33 +844,44 @@ impl Game {
 
         match action {
             Action::Fold => {
-                let p = &mut self.players[player_index];
-                p.folded = true;
-                p.acted = true;
-                p.turn_ended = true;
+                self.force_fold_player(player_index, &mut action_events);
             }
             Action::Call => {
                 let maybe_max_bet = self.get_current_max_bet();
-                let p = &mut self.players[player_index];
-                let max_hand_capacity = if let Some(max_bet) = maybe_max_bet {
-                    (max_bet - p.total_bet).max(0)
-                } else {
-                    i32::MAX
-                };
-                let call_amount = (self.bet - p.round_bet).max(0).min(p.chips).min(max_hand_capacity);
-                p.chips -= call_amount;
-                p.round_bet += call_amount;
-                p.total_bet += call_amount;
-                self.round_pool += call_amount;
-                p.acted = true;
-                p.turn_ended = true;
+                let call_amount = {
+                    let p = &mut self.players[player_index];
+                    let max_hand_capacity = if let Some(max_bet) = maybe_max_bet {
+                        (max_bet - p.total_bet).max(0)
+                    } else {
+                        i32::MAX
+                    };
+                    let call_amount = (self.bet - p.round_bet).max(0).min(p.chips).min(max_hand_capacity);
+                    p.chips -= call_amount;
+                    p.round_bet += call_amount;
+                    p.total_bet += call_amount;
+                    self.round_pool += call_amount;
+                    p.acted = true;
+                    p.turn_ended = true;
 
-                bet_delta = Some(call_amount);
-                round_bet_after = Some(p.round_bet);
-                total_bet_after = Some(p.total_bet);
+                    bet_delta = Some(call_amount);
+                    round_bet_after = Some(p.round_bet);
+                    total_bet_after = Some(p.total_bet);
+                    call_amount
+                };
+                if call_amount > 0 {
+                    special::on_event(
+                        GameEvent::PlayerBet {
+                            player_id,
+                            amount: call_amount,
+                            kind: BetKind::Call,
+                        },
+                        self,
+                        &mut action_events,
+                    );
+                }
             }
             Action::Raise { amount } => {
-                if self.modifiers.raises_blocked() {
+                if self.special.raises_blocked() {
                     return Err(GameError::RaiseBlocked);
                 }
 
@@ -901,7 +912,7 @@ impl Game {
                 }
                 let raise_cost = ((self.bet + true_raise) - p.round_bet).min(p.chips).min(max_hand_capacity);
 
-                let effective_min_raise = (self.ctx.min_raise as f64 * self.modifiers.vars.ante_multiplier) as i32;
+                let effective_min_raise = (self.ctx.min_raise as f64 * self.special.ante_multiplier()) as i32;
                 let new_total_bet = p.total_bet + raise_cost;
                 let reached_cap = maybe_max_bet.map(|m| new_total_bet >= m).unwrap_or(false);
 
@@ -924,7 +935,7 @@ impl Game {
                 if true_raise > 0 {
                     for (i, other) in self.players.iter_mut().enumerate() {
                         if i != player_index && !other.folded {
-                            let can_play_specials = !other.special_cards.is_empty() && !self.modifiers.specials_blocked();
+                            let can_play_specials = !other.special_cards.is_empty() && !self.special.specials_blocked();
                             if other.chips > 0 || can_play_specials {
                                 other.acted = false;
                                 other.turn_ended = false;
@@ -934,17 +945,30 @@ impl Game {
                 }
                 self.players[player_index].acted = true;
                 self.players[player_index].turn_ended = true;
+
+                if raise_cost > 0 {
+                    special::on_event(
+                        GameEvent::PlayerBet {
+                            player_id,
+                            amount: raise_cost,
+                            kind: BetKind::Raise,
+                        },
+                        self,
+                        &mut action_events,
+                    );
+                }
             }
             Action::Timeout => {
-                let p = &mut self.players[player_index];
-                if !p.acted {
-                    p.folded = true;
+                if !self.players[player_index].acted {
+                    self.force_fold_player(player_index, &mut action_events);
+                } else {
+                    let p = &mut self.players[player_index];
+                    p.acted = true;
+                    p.turn_ended = true;
                 }
-                p.acted = true;
-                p.turn_ended = true;
             }
             Action::PlaySpecial { card, target_id, card_index } => {
-                if self.modifiers.specials_blocked() {
+                if self.special.specials_blocked() {
                     return Err(GameError::SpecialCardsBlocked);
                 }
 
@@ -979,9 +1003,20 @@ impl Game {
         Ok(())
     }
 
+    pub(crate) fn force_fold_player(&mut self, player_index: usize, events: &mut Vec<MoveEvent>) {
+        let (player_id, total_bet) = {
+            let p = &mut self.players[player_index];
+            p.folded = true;
+            p.acted = true;
+            p.turn_ended = true;
+            (p.id, p.total_bet)
+        };
+        special::on_event(GameEvent::PlayerFolded { player_id, total_bet }, self, events);
+    }
+
     fn current_turn_complete(&self) -> bool {
         let current_player = &self.players[self.turn_index];
-        let can_play_specials = !current_player.special_cards.is_empty() && !self.modifiers.specials_blocked();
+        let can_play_specials = !current_player.special_cards.is_empty() && !self.special.specials_blocked();
 
         current_player.folded || current_player.acted || current_player.turn_ended || (self.is_player_all_in(current_player) && !can_play_specials)
     }
@@ -991,14 +1026,11 @@ impl Game {
 
         let next_player_id = self.players[self.turn_index].id;
         // clear expired blocks
-        let expired = self.modifiers.player_turn(next_player_id);
-        self.clear_modifier_effects(expired);
-    }
-
-    fn clear_modifier_effects(&mut self, expired: Vec<Modifier>) {
-        for m in expired {
-            m.remove_effect(self);
-        }
+        special::on_event(
+            GameEvent::TurnAdvanced { player_id: next_player_id },
+            self,
+            &mut Vec::new(),
+        );
     }
 
     /**
@@ -1059,7 +1091,7 @@ impl Game {
             return true;
         }
         active_players.iter().all(|p| {
-            let can_play_specials = !p.special_cards.is_empty() && !self.modifiers.specials_blocked();
+            let can_play_specials = !p.special_cards.is_empty() && !self.special.specials_blocked();
             (self.is_player_all_in(p) && (!can_play_specials || p.acted || p.turn_ended))
                 || (p.acted && p.round_bet == self.bet)
         })
@@ -1068,8 +1100,7 @@ impl Game {
     fn advance_to_next_round(&mut self, events: &mut Vec<MoveEvent>) {
         self.process_pots();
 
-        let expired = self.modifiers.round_ended();
-        self.clear_modifier_effects(expired);
+        special::on_event(GameEvent::StreetEnded, self, events);
 
         for p in self.players.iter_mut() {
             p.round_bet = 0;
@@ -1131,20 +1162,32 @@ impl Game {
         from_idx
     }
 
-    fn make_player_pay_blind(&mut self, player_index: usize, blind_size: i32) -> i32 {
+    fn make_player_pay_blind(&mut self, player_index: usize, blind_size: i32, events: &mut Vec<MoveEvent>) -> i32 {
         let actual_blind = blind_size.min(self.players[player_index].chips);
         self.players[player_index].chips -= actual_blind;
         self.players[player_index].total_bet = actual_blind;
         self.players[player_index].round_bet = actual_blind;
+        if actual_blind > 0 {
+            let player_id = self.players[player_index].id;
+            special::on_event(
+                GameEvent::PlayerBet {
+                    player_id,
+                    amount: actual_blind,
+                    kind: BetKind::Blind,
+                },
+                self,
+                events,
+            );
+        }
         actual_blind
     }
 
-    fn pay_blinds(&mut self, sb_index: usize, end_index: usize) {
+    fn pay_blinds(&mut self, sb_index: usize, end_index: usize, events: &mut Vec<MoveEvent>) {
         let bb_index = self.get_next_active_player_index(sb_index);
-        let blind_size = (self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32;
+        let blind_size = (self.ctx.blind_size as f64 * self.special.ante_multiplier()) as i32;
 
-        let sb = self.make_player_pay_blind(sb_index, blind_size / 2);
-        let bb = self.make_player_pay_blind(bb_index, blind_size);
+        let sb = self.make_player_pay_blind(sb_index, blind_size / 2, events);
+        let bb = self.make_player_pay_blind(bb_index, blind_size, events);
 
         self.round_pool = sb + bb;
         self.bet = sb.max(bb);
@@ -1181,7 +1224,6 @@ impl Game {
         self.community.clear();
         self.winning_hand_type.clear();
         self.pending_drafts.clear();
-        self.ante_up_drawn_this_hand = false;
 
         self.deck = self.ctx.deck_type.get_associated_deck();
         self.deck.shuffle(&mut self.ctx.rng);
@@ -1208,17 +1250,19 @@ impl Game {
             }
         }
 
+        special::on_event(GameEvent::HandStarted, self, events);
+
         self.deal_hole_cards(2, events);
 
         // heads up rules if 2 active players
         if active_indices.len() == 2 {
-            self.pay_blinds(self.dealer_index, self.dealer_index);
+            self.pay_blinds(self.dealer_index, self.dealer_index, events);
         // otherwise typical rules
         } else if active_indices.len() > 2 {
             let sb_idx = self.get_next_active_player_index(self.dealer_index);
             let bb_idx = self.get_next_active_player_index(sb_idx);
             let first_turn = self.get_next_active_player_index(bb_idx);
-            self.pay_blinds(sb_idx, first_turn);
+            self.pay_blinds(sb_idx, first_turn, events);
         } else {
             self.turn_index = self.get_next_active_player_index(self.dealer_index);
         }
@@ -1232,13 +1276,24 @@ impl Game {
         }
     }
 
-    fn deal_hole_card(&mut self, player_id: usize, events: &mut Vec<MoveEvent>) {
+    pub(crate) fn deal_hole_card(&mut self, player_id: usize, events: &mut Vec<MoveEvent>) {
         let player_index = self.get_player_index(player_id).unwrap();
         if self.players[player_index].folded {
             return;
         }
 
-        let next_card = self.deck.pop().unwrap_or(ExpandedCard::Unmarked);
+        let reference_card = self.players[player_index]
+            .cards
+            .last()
+            .copied()
+            .or_else(|| self.community.last().copied());
+        let next_card = special::draw_deck_card(
+            self,
+            DrawTarget::Hole { player_id },
+            reference_card,
+            events,
+        );
+        let player_index = self.get_player_index(player_id).unwrap();
         self.players[player_index].cards.push(next_card);
         self.players[player_index].card_visibility.push(vec![]);
 
@@ -1306,18 +1361,20 @@ impl Game {
     }
 
     /**
-     * Generic pot distribution function. Returns the winner IDs of the main pot (first pot).
+     * Generic pot distribution function. Returns the winner IDs and total chip payouts of all winning players
      */
-    fn distribute_pots<T: Ord>(&mut self, mut entries: Vec<(usize, T)>) -> Vec<usize> {
+    fn distribute_pots<T: Ord>(&mut self, mut entries: Vec<(usize, T)>) -> (Vec<usize>, Vec<(usize, i32)>) {
         // sort in descending order
         entries.sort_by(|(_, a), (_, b)| b.cmp(a));
 
         // apply pot mult
+        let pot_mult = self.special.pot_multiplier();
         for pot in &mut self.pots {
-            pot.amount = (pot.amount as f64 * self.modifiers.vars.pot_multiplier).round() as i32;
+            pot.amount = (pot.amount as f64 * pot_mult).round() as i32;
         }
 
         let mut main_pot_winners = Vec::new();
+        let mut payouts: std::collections::HashMap<usize, i32> = std::collections::HashMap::new();
 
         // iterates through all pots, finding winners for each and individually distributing chips
         for (pot_idx, pot) in self.pots.iter().enumerate() {
@@ -1340,17 +1397,16 @@ impl Game {
                 let mut remainder = pot.amount % winners.len() as i32;
                 for winner_id in winners {
                     if let Ok(index) = self.get_player_index(winner_id) {
-                        self.players[index].chips += split;
-                        if remainder > 0 {
-                            self.players[index].chips += 1;
-                            remainder -= 1;
-                        }
+                        let payout = split + if remainder > 0 { remainder -= 1; 1 } else { 0 };
+                        self.players[index].chips += payout;
+                        *payouts.entry(winner_id).or_insert(0) += payout;
                     }
                 }
             }
         }
 
-        main_pot_winners
+        let payout_list: Vec<(usize, i32)> = payouts.into_iter().collect();
+        (main_pot_winners, payout_list)
     }
 
     fn resolve_showdown(&mut self, events: &mut Vec<MoveEvent>) {
@@ -1361,7 +1417,7 @@ impl Game {
 
         // this function structure allows for modifiers to overwrite the default scoring
         // so long as they can produce a Vec of Ord elements to sort players by
-        let main_pot_winners = if self.modifiers.blackjack_active() {
+        let (main_pot_winners, payouts) = if self.special.blackjack_active() {
             let scores: Vec<(usize, i32)> = self.players.iter()
                 .filter(|p| !p.folded)
                 .map(|p| (p.id, special::evaluate_blackjack_hand(&p.cards)))
@@ -1377,7 +1433,7 @@ impl Game {
 
             self.distribute_pots(scores)
         } else {
-            let invalid_hands = self.modifiers.invalidated_hands();
+            let invalid_hands = self.special.invalidated_hands();
             let hands: Vec<(usize, Hand)> = self.players.iter()
                 .filter(|p| !p.folded)
                 .map(|p| {
@@ -1395,6 +1451,8 @@ impl Game {
         self.pots.clear();
         self.round_pool = 0;
 
+        special::on_event(GameEvent::ShowdownResolved { payouts }, self, events);
+
         self.prepare_winner_drafts(&main_pot_winners, main_pot_amount, total_chips, events);
     }
 
@@ -1403,7 +1461,7 @@ impl Game {
         let total_chips: i32 = self.players.iter().map(|p| p.chips).sum::<i32>()
             + self.pots.iter().map(|p| p.amount).sum::<i32>();
         let raw_pot: i32 = self.pots.iter().map(|p| p.amount).sum::<i32>();
-        let total_pot = (raw_pot as f64 * self.modifiers.vars.pot_multiplier).round() as i32;
+        let total_pot = (raw_pot as f64 * self.special.pot_multiplier()).round() as i32;
         if let Ok(index) = self.get_player_index(winner_id) {
             self.players[index].chips += total_pot;
             self.turn_index = index;
@@ -1411,21 +1469,22 @@ impl Game {
         self.pots.clear();
         self.round_pool = 0;
 
-        self.prepare_winner_drafts(&[winner_id], raw_pot, total_chips, events);
-    }
+        special::on_event(
+            GameEvent::ShowdownResolved {
+                payouts: vec![(winner_id, total_pot)],
+            },
+            self,
+            events,
+        );
 
-    pub(crate) fn record_special_card_received(&mut self, card: SpecialCard) {
-        if card == SpecialCard::AnteUp {
-            self.rounds_since_ante_up = 0;
-            self.ante_up_drawn_this_hand = true;
-        }
+        self.prepare_winner_drafts(&[winner_id], raw_pot, total_chips, events);
     }
 
     fn grant_drafted_card(&mut self, player_id: usize, card: SpecialCard, events: &mut Vec<MoveEvent>) {
         if let Ok(idx) = self.get_player_index(player_id) {
             if self.players[idx].special_cards.len() < self.ctx.special_card_limit {
                 self.players[idx].special_cards.push(card);
-                self.record_special_card_received(card);
+                special::on_event(GameEvent::SpecialReceived { player_id, card }, self, events);
                 events.push(MoveEvent {
                     actor_id: Some(player_id),
                     action: MoveAction::DealSpecial { count: 1 },
@@ -1455,7 +1514,7 @@ impl Game {
             return;
         }
 
-        let effective_blind = ((self.ctx.blind_size as f64 * self.modifiers.vars.ante_multiplier) as i32).max(1);
+        let effective_blind = ((self.ctx.blind_size as f64 * self.special.ante_multiplier()) as i32).max(1);
         let min_contested_pot = effective_blind + (effective_blind / 2);
         let pot_ratio = (pot_amount as f64 / total_chips as f64).clamp(0.0, 1.0);
 
@@ -1555,18 +1614,11 @@ impl Game {
         events
     }
 
-    fn end_hand(&mut self) {
+    fn end_hand(&mut self, events: &mut Vec<MoveEvent>) {
         self.games_played += 1;
-        if self.ante_up_drawn_this_hand {
-            self.rounds_since_ante_up = 0;
-        } else {
-            self.rounds_since_ante_up = self.rounds_since_ante_up.saturating_add(1);
-        }
-        self.ante_up_drawn_this_hand = false;
         self.players.retain(|p| !p.remove);
 
-        let expired = self.modifiers.hand_ended();
-        self.clear_modifier_effects(expired);
+        special::on_event(GameEvent::HandEnded, self, events);
 
         if self.games_played >= self.ctx.round_limit {
             self.end_game();
@@ -1588,7 +1640,8 @@ impl Game {
      */
     fn deal_community_cards(&mut self, count: usize, events: &mut Vec<MoveEvent>) {
         for _ in 0..count {
-            let card = self.pop_next_deck_card();
+            let reference_card = self.community.last().copied();
+            let card = special::draw_deck_card(self, DrawTarget::Community, reference_card, events);
             self.community.push(card);
         }
 
@@ -1597,24 +1650,6 @@ impl Game {
             action: MoveAction::DealCommunity { count }, 
             private: false 
         });
-    }
-
-    /**
-     * Draws a single deck card from the pile, adhering to draw rules and producing a draw event
-     * Importantly, this does not populate the event array 
-     */
-    fn pop_next_deck_card(&mut self) -> ExpandedCard {
-        let draw_rules = self.modifiers.draw_rule(self);
-        let card = if let Some(index) = self.deck.iter().rposition(|card| draw_rules(card)) {
-            self.deck.remove(index)
-        } else {
-            ExpandedCard::Unmarked
-        };
-
-        let expired = self.modifiers.community_draw();
-        self.clear_modifier_effects(expired);
-
-        card
     }
 
     fn remove_community_card(&mut self, index: usize, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
@@ -1668,9 +1703,7 @@ impl Game {
         let winners: Vec<usize> = self.players.iter().filter_map(|p| if p.chips == max_chips { Some(p.id) } else { None }).collect();
         self.winner_ids = winners;
 
-        let expired = self.modifiers.active.clone();
-        expired.iter().for_each(|m| m.remove_effect(self));
-        self.modifiers.game_ended();
+        special::on_event(GameEvent::GameEnded, self, &mut Vec::new());
 
         self.round = Round::GameEnd;
     }

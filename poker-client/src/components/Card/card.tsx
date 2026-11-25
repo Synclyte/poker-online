@@ -17,11 +17,11 @@ export function parseCardString(cardStr: string) {
         "s": { symbol: "spade", color: "#000000" },
         "c": { symbol: "club", color: "#000000" },
         "h": { symbol: "heart", color: "#e53935" },
-        "d": { symbol: "diamond", color: "#e53935" }
+        "d": { symbol: "diamond", color: "#e53935" },
     };
 
     const displayRank = rawRank.toUpperCase();
-    const suitInfo = suitMap[rawSuit] || { symbol: "?", color: "#000000" };
+    const suitInfo = suitMap[rawSuit] || { symbol: "", color: "#000000" };
 
     return {
         isHidden: false,
@@ -32,208 +32,250 @@ export function parseCardString(cardStr: string) {
 }
 
 export const specialCardInfo: Record<string, SpecialCardInfo> = {
-    ReplaceCardSelf: {
+    replace_card_self: {
         label: "Replace Hole Card",
         description: "Replaces a selected hole card with a random new card, drawn from the deck",
         target: "selfCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_replace_card_self.png",
     },
-    DrawCardSelf: {
+    draw_card_self: {
         label: "Draw Hole Card",
         description: "Draws an additional hole card from the deck. This card is visible to opponents",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_card_self.png",
     },
-    DrawCardCommunity: {
+    draw_card_community: {
         label: "Draw Community Card",
         description: "Draws an additional card from the deck, adding it to community cards",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_card_community.png",
     },
-    ReplaceCardCommunity: {
+    replace_card_community: {
         label: "Replace Community",
         description: "Replace a selected community card with a new card from the deck",
         target: "communityCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_replace_card_community.png",
     },
-    RemoveCardCommunity: {
+    remove_card_community: {
         label: "Remove Community",
         description: "Removes a selected community card",
         target: "communityCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_remove_card_community.png",
     },
-    RevealOpponentCard: {
+    reveal_opponent_card: {
         label: "Reveal Card",
         description: "Reveals a chosen hole card of a selected opponent to you until the end of the current hand",
         target: "otherCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_reveal_opponent_card.png",
     },
-    WithdrawBet: {
+    withdraw_bet: {
         label: "Withdraw Bet",
         description: "Fold recovering your bet from the pot",
         target: "none",
         imgSrc: "/src/assets/special/special_withdraw_bet.png",
     },
-    AnteUp: {
+    ante_up: {
         label: "Ante Up",
         description: "Doubles the blind and minimum raise costs permanently. Grants a Chip Boost special card on use",
         target: "none",
         imgSrc: "/src/assets/special/special_ante_up.png",
     },
-    PotMult: {
+    pot_mult: {
         label: "Pot Multiplier",
         description: "Multiplies player winnings from the pot this hand by 1.4x",
         target: "none",
         imgSrc: "/src/assets/special/special_pot_mult.png",
     },
-    RaiseBlock: {
+    raise_block: {
         label: "Raise Block",
         description: "Prevents raises by all players until your next turn",
         target: "none",
         imgSrc: "/src/assets/special/special_raise_block.png",
     },
-    SpecialBlock: {
+    special_block: {
         label: "Special Block",
         description: "Prevent all special cards from being played until your next turn",
         target: "none",
         imgSrc: "/src/assets/special/special_special_block.png",
     },
-    ChipBoost: {
+    chip_boost: {
         label: "Chip Boost",
         description: "Gain chips proportional to the blind cost",
         target: "none",
         imgSrc: "/src/assets/special/special_chip_boost.png",
     },
-    ChipGamble: {
+    chip_gamble: {
         label: "Chip Gamble",
         description: "When used, has a chance to give a significant number of chips. If it fails, lose half of your chips and fold",
         target: "none",
         imgSrc: "/src/assets/special/special_chip_gamble.png",
     },
-    Blackjack: {
+    blackjack: {
         label: "Blackjack",
         description: "Changes scoring system to Blackjack for the current hand. Provides a Draw Hole Card special card to all players on use",
         target: "none",
         imgSrc: "/src/assets/special/special_blackjack.png",
     },
-    DrawHeart: {
+    draw_heart: {
         label: "Draw Heart",
-        description: "Forces the next drawn community card to have the Heart suit",
+        description: "Forces the next drawn card to have the Heart suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_heart.png",
     },
-    DrawSpade: {
+    draw_spade: {
         label: "Draw Spade",
-        description: "Forces the next drawn community card to have the Spade suit",
+        description: "Forces the next drawn card to have the Spade suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_spade.png",
     },
-    DrawDiamond: {
+    draw_diamond: {
         label: "Draw Diamond",
-        description: "Forces the next drawn community card to have the Diamond suit",
+        description: "Forces the next drawn card to have the Diamond suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_diamond.png",
     },
-    DrawClub: {
+    draw_club: {
         label: "Draw Club",
-        description: "Forces the next drawn community card to have the Club suit",
+        description: "Forces the next drawn card to have the Club suit",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_club.png",
     },
-    DrawFace: {
+    draw_face: {
         label: "Draw Face",
-        description: "Forces the next drawn community card to be a face card",
+        description: "Forces the next drawn card to be a face card",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_face.png",
     },
-    DrawHigh: {
+    draw_high: {
         label: "Draw High",
-        description: "Forces the next community card to be a 10 or above",
+        description: "Forces the next drawn card to be a 10 or above",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_high.png",
     },
-    DrawLow: {
+    draw_low: {
         label: "Draw Low",
-        description: "Forces the next community card to be a 5 or below",
+        description: "Forces the next drawn card to be a 5 or below",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_low.png",
     },
-    InvalidateFlush: {
+    invalidate_flush: {
         label: "No Flushes",
         description: "Invalidates Flushes for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_flush.png",
     },
-    InvalidateStraight: {
+    invalidate_straight: {
         label: "No Straights",
         description: "Invalidates Straights for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_straight.png",
     },
-    InvalidateThreeOfAKind: {
+    invalidate_three_of_a_kind: {
         label: "No Three of a Kind",
         description: "Invalidates Three of a Kinds for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_three_of_a_kind.png",
     },
-    InvalidateTwoPair: {
+    invalidate_two_pair: {
         label: "No Two Pair",
         description: "Invalidates Two Pairs for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_two_pair.png",
     },
-    InvalidateFullHouse: {
+    invalidate_full_house: {
         label: "No Full House",
         description: "Invalidates Full Houses for this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_invalidate_full_house.png",
     },
-    Special: {
+    special: {
         label: "Special",
-        description: "Secret - small chance to obtain when using a special card. Gives multiple special cards on use, exceeding the typical special card limit",
+        description: "Small chance to obtain when using a special card. Gives multiple special cards on use, exceeding the typical special card limit",
         target: "none",
         imgSrc: "/src/assets/special/special_special.png",
     },
-    DrawHigherThanLast: {
+    draw_higher_than_last: {
         label: "Draw Higher",
-        description: "Forces the next drawn community card to have a rank equal to or higher than the previous draw",
+        description: "Forces the next drawn card to have a rank equal to or higher than the previous draw",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_higher_than_last.png",
     },
-    DrawLowerThanLast: {
+    draw_lower_than_last: {
         label: "Draw Lower",
-        description: "Forces the next drawn community card to have a rank equal to or lower than the previous draw",
+        description: "Forces the next drawn card to have a rank equal to or lower than the previous draw",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_lower_than_last.png",
     },
-    DrawSameSuitAsLast: {
+    draw_same_suit_as_last: {
         label: "Draw Same Suit",
-        description: "Forces the next drawn community card to be the same suit as the previous draw",
+        description: "Forces the next drawn card to be the same suit as the previous draw",
         target: "none",
         imgSrc: "/src/assets/special/special_draw_same_suit_as_last.png",
     },
-    Discard: {
+    discard: {
         label: "Discard",
-        description: "Secret - small chance to obtain when discarding a special card. Prevents any more community cards from being drawn for the rest of this hand",
+        description: "Small chance to obtain when discarding a special card. Prevents any more community cards from being drawn for the rest of this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_discard.png",
     },
-    HandSwap: {
+    hand_swap: {
         label: "Hand Swap",
         description: "Swaps your hand with that of a chosen opponent. Fails if their hand is currently better than yours",
         target: "other",
         imgSrc: "/src/assets/special/special_hand_swap.png",
     },
-    Joker: {
+    joker: {
         label: "Joker",
         description: "Converts a selected community card into a Joker",
         target: "communityCard",
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_joker.png",
+    },
+    special_spread: {
+        label: "Special Spread",
+        description: "Deals 1 special card to all players",
+        target: "none",
+    },
+    rank_boost: {
+        label: "Rank Boost",
+        description: "Increases the rank of a selected hole card by 1",
+        target: "selfCard",
+        requiresTargetIndex: true,
+    },
+    suit_match: {
+        label: "Suit Match",
+        description: "Changes a selected hole card's suit to match a random other card in your hand",
+        target: "selfCard",
+        requiresTargetIndex: true,
+    },
+    redraw_hand: {
+        label: "Redraw Hand",
+        description: "Redraws all of the cards in your hand",
+        target: "none",
+    },
+    loss_insurance: {
+        label: "Loss Insurance",
+        description: "Refunds 40% of chips spent by you this hand on round loss",
+        target: "none",
+    },
+    bet_rebate: {
+        label: "Bet Rebate",
+        description: "Refunds 20% of all chips spent by you in the next 3 hands after the effect expires",
+        target: "none",
+    },
+    chip_stipend: {
+        label: "Chip Stipend",
+        description: "Gain 1x blind size at the end of each hand for 4 hands, scaling with ante",
+        target: "none",
+    },
+    draw: {
+        label: "Draw",
+        description: "Small chance to obtain when drawing a hole card. When used, deals 2 hole cards to you, 1 hole card to each opponent, and 1 community card. All drawn cards are revealed to everyone",
+        target: "none",
     },
 };
 
@@ -246,11 +288,8 @@ export function getSpecialCardInfo(
     if (!cardStr) {
         return { label: "Special", description: "No description", target: "none" };
     }
-    const info = specialCardInfo[cardStr] ||
-        specialCardInfo[cardStr.charAt(0).toUpperCase() + cardStr.slice(1)] ||
-        Object.entries(specialCardInfo).find(([k]) => k.toLowerCase() === cardStr.toLowerCase())?.[1];
 
-    const baseInfo = info ?? {
+    const baseInfo = specialCardInfo[cardStr] ?? {
         label: cardStr,
         description: "No description",
         target: "none",
@@ -264,19 +303,25 @@ export function getSpecialCardInfo(
         imgSrc: baseInfo.imgSrc ? getAssetUrl(baseInfo.imgSrc) : baseInfo.imgSrc,
     };
 
-    if (cardStr.toLowerCase().includes("chipboost")) {
+    if (cardStr === "chip_boost") {
         const boostChips = Math.round(bSize * aMult * 2.5);
         finalInfo = {
             ...finalInfo,
             description: `Gain +${boostChips} chips on use, scaling with blind cost`,
         };
-    } else if (cardStr.toLowerCase().includes("chipgamble")) {
+    } else if (cardStr === "chip_gamble") {
         const gambleChips = Math.round(bSize * aMult * 7.5);
         const chance = gambleSuccessChance ?? 0.9;
         const successChance = Math.round(chance * 100);
         finalInfo = {
             ...finalInfo,
             description: `Results in one of two outcomes. ${successChance}% chance to gain +${gambleChips} chips, scaling with blind cost. ${100 - successChance}% chance to force you to fold and lose half of your chips`,
+        };
+    } else if (cardStr === "chip_stipend") {
+        const stipendChips = Math.round(bSize * aMult);
+        finalInfo = {
+            ...finalInfo,
+            description: `Gain +${stipendChips} chips at the end of each hand for 4 hands, scaling with blind cost`,
         };
     }
 
@@ -315,24 +360,29 @@ export function buildSpecialCardInnerHTML(cardValue: string, isSelf: boolean): s
 }
 
 const handNameMap: Record<string, string> = {
-    royalflush: "Royal Flush",
-    straightflush: "Straight Flush",
-    fourofakind: "Four of a Kind",
-    fullhouse: "Full House",
+    royal_flush: "Royal Flush",
+    straight_flush: "Straight Flush",
+    four_of_a_kind: "Four of a Kind",
+    full_house: "Full House",
     flush: "Flush",
     straight: "Straight",
-    threeofakind: "Three of a Kind",
-    twopair: "Two Pair",
+    three_of_a_kind: "Three of a Kind",
+    two_pair: "Two Pair",
     pair: "Pair",
-    highcard: "High Card",
+    high_card: "High Card",
     none: "Nothing",
 };
 
 export function getSanitisedHandName(internalName: string): string {
-    return handNameMap[internalName.toLowerCase()] ?? internalName;
+    return handNameMap[internalName] ?? internalName;
 }
 
-export function parseModifier(mod: any, index: number): ActiveModifierInfo {
+export function parseModifier(
+    mod: any,
+    index: number,
+    blindSize?: number,
+    anteMult?: number
+): ActiveModifierInfo {
     let name = "Active Modifier";
     let description = "An active game modifier.";
     let duration = "Active";
@@ -341,143 +391,155 @@ export function parseModifier(mod: any, index: number): ActiveModifierInfo {
     let imgSrc = "/src/assets/special/special.png";
 
     if (typeof mod.effect === "string") {
-        const eff = mod.effect.toLowerCase();
-        if (eff.includes("raisesblocked")) {
-            name = "Raise Block";
-            description = "Raises are prevented";
-            typeKey = "raises_blocked";
-            imgSrc = getSpecialCardInfo("RaiseBlock").imgSrc ?? imgSrc;
-        } else if (eff.includes("specialsblocked")) {
-            name = "Special Block";
-            description = "Special cards cannot be played";
-            typeKey = "specials_blocked";
-            imgSrc = getSpecialCardInfo("SpecialBlock").imgSrc ?? imgSrc;
-        } else if (eff.includes("blackjackscoring")) {
-            name = "Blackjack Scoring";
-            description = "Closest hand sum to 21 wins";
-            typeKey = "blackjack_scoring";
-            imgSrc = getSpecialCardInfo("Blackjack").imgSrc ?? imgSrc;
-        } else if (eff.includes("revealcard") || eff.includes("revealopponentcard")) {
-            name = "Reveal Card";
-            description = "A card has been revealed";
-            typeKey = "reveal_card";
-            imgSrc = getSpecialCardInfo("RevealOpponentCard").imgSrc ?? imgSrc;
+        switch (mod.effect) {
+            case "raises_blocked":
+                name = "Raise Block";
+                description = "Raises are prevented";
+                typeKey = "raises_blocked";
+                imgSrc = getSpecialCardInfo("raise_block").imgSrc ?? imgSrc;
+                break;
+            case "specials_blocked":
+                name = "Special Block";
+                description = "Special cards cannot be played";
+                typeKey = "specials_blocked";
+                imgSrc = getSpecialCardInfo("special_block").imgSrc ?? imgSrc;
+                break;
+            case "blackjack_scoring":
+                name = "Blackjack Scoring";
+                description = "Closest hand sum to 21 wins";
+                typeKey = "blackjack_scoring";
+                imgSrc = getSpecialCardInfo("blackjack").imgSrc ?? imgSrc;
+                break;
         }
     } else if (mod.effect && typeof mod.effect === "object") {
-        if ("potMultiplier" in mod.effect || "PotMultiplier" in mod.effect) {
-            const val = mod.effect.potMultiplier?.multiplier ?? mod.effect.PotMultiplier?.multiplier ?? 1.4;
-            name = `Pot Multiplier (${val}x)`;
+        if ("pot_multiplier" in mod.effect) {
+            const val = mod.effect.pot_multiplier?.multiplier ?? 1.4;
+            name = `Pot Multiplier`;
             description = `Multiplies all pot gains by ${val}x.`;
             typeKey = "pot_multiplier";
-            imgSrc = getSpecialCardInfo("PotMult").imgSrc ?? imgSrc;
-        } else if ("anteMultiplier" in mod.effect || "AnteMultiplier" in mod.effect) {
-            const val = mod.effect.anteMultiplier?.multiplier ?? mod.effect.AnteMultiplier?.multiplier ?? 2.0;
-            name = `Ante Multiplier (${val}x)`;
+            imgSrc = getSpecialCardInfo("pot_mult").imgSrc ?? imgSrc;
+        } else if ("ante_multiplier" in mod.effect) {
+            const val = mod.effect.ante_multiplier?.multiplier ?? 2.0;
+            name = `Ante Multiplier`;
             description = `Multiplies minimum bets and blinds by ${val}x.`;
             typeKey = "ante_multiplier";
-            imgSrc = getSpecialCardInfo("AnteUp").imgSrc ?? imgSrc;
-        } else if ("revealCard" in mod.effect || "RevealCard" in mod.effect || "reveal_card" in mod.effect) {
+            imgSrc = getSpecialCardInfo("ante_up").imgSrc ?? imgSrc;
+        } else if ("reveal_card" in mod.effect) {
             name = "Reveal Card";
             description = "Opponent card revealed";
             typeKey = "reveal_card";
-            imgSrc = getSpecialCardInfo("RevealOpponentCard").imgSrc ?? imgSrc;
-        } else if ("invalidateHand" in mod.effect || "InvalidateHand" in mod.effect) {
-            const rawHand = mod.effect.invalidateHand ?? mod.effect.InvalidateHand ?? "Hand";
-            const rawHandStr = typeof rawHand === "string" ? rawHand : String(rawHand ?? "Hand");
+            imgSrc = getSpecialCardInfo("reveal_opponent_card").imgSrc ?? imgSrc;
+        } else if ("loss_insurance" in mod.effect) {
+            const rate = mod.effect.loss_insurance?.rebate_rate ?? 0.4;
+            const pct = Math.round(rate * 100);
+            name = `Loss Insurance (${pct}%)`;
+            description = `Refunds ${pct}% of lost chips on fold or showdown loss`;
+            typeKey = "loss_insurance";
+            imgSrc = getSpecialCardInfo("loss_insurance").imgSrc ?? imgSrc;
+        } else if ("bet_rebate" in mod.effect) {
+            const data = mod.effect.bet_rebate;
+            const rate = data?.rebate_rate ?? 0.2;
+            const accumulated = data?.accumulated_bet ?? 0;
+            const pct = Math.round(rate * 100);
+            name = `Bet Rebate`;
+            description = `Refunds ${pct}% of chips spent while this modifier is active on expiry (${accumulated} chips total)`;
+            typeKey = "bet_rebate";
+            imgSrc = getSpecialCardInfo("bet_rebate").imgSrc ?? imgSrc;
+        } else if ("chip_stipend" in mod.effect) {
+            const chips = Math.round((blindSize ?? 20) * (anteMult ?? 1));
+            name = "Chip Stipend";
+            description = `Grants ${chips} chips at the end of each hand`;
+            typeKey = "chip_stipend";
+            imgSrc = getSpecialCardInfo("chip_stipend").imgSrc ?? imgSrc;
+        } else if ("invalidate_hand" in mod.effect) {
+            const rawHand = mod.effect.invalidate_hand ?? "none";
+            const rawHandStr = typeof rawHand === "string" ? rawHand : String(rawHand ?? "none");
             const handName = getSanitisedHandName(rawHandStr);
             const pluralHandName = `${handName}${handName === "Flush" ? "es" : "s"}`;
             name = `${pluralHandName} Disabled`;
             description = `${pluralHandName} are disabled and cannot score`;
             typeKey = "invalidate_hand";
-
-            const cardKey = `Invalidate${rawHandStr.charAt(0).toUpperCase() + rawHandStr.slice(1)}`;
-            imgSrc = getSpecialCardInfo(cardKey).imgSrc ?? imgSrc;
-        } else if ("forceCommunityDraw" in mod.effect || "ForceCommunityDraw" in mod.effect) {
-            const rule = mod.effect.forceCommunityDraw ?? mod.effect.ForceCommunityDraw;
+            imgSrc = getSpecialCardInfo(`invalidate_${rawHandStr}`).imgSrc ?? imgSrc;
+        } else if ("force_draw" in mod.effect) {
+            const rule = mod.effect.force_draw?.rule;
             const ruleStr = typeof rule === "string" ? rule : String(rule ?? "");
 
-            const cardKey = `Draw${ruleStr}`;
-            imgSrc = getSpecialCardInfo(cardKey).imgSrc ?? imgSrc;
+            imgSrc = getSpecialCardInfo(`draw_${ruleStr}`).imgSrc ?? imgSrc;
 
             switch (ruleStr) {
-                case "Heart":
+                case "heart":
                     name = "Draw Heart";
-                    description = "Forces community card draws to have the Heart suit";
+                    description = "Forces the next card draw to be a Heart";
                     typeKey = "draw_heart";
                     break;
-                case "Spade":
+                case "spade":
                     name = "Draw Spade";
-                    description = "Forces community card draws to have the Spade suit";
+                    description = "Forces the next card draw to be a Spade";
                     typeKey = "draw_spade";
                     break;
-                case "Diamond":
+                case "diamond":
                     name = "Draw Diamond";
-                    description = "Forces community card draws to have the Diamond suit";
+                    description = "Forces the next card draw to be a Diamond";
                     typeKey = "draw_diamond";
                     break;
-                case "Club":
+                case "club":
                     name = "Draw Club";
-                    description = "Forces community card draws to have the Club suit";
+                    description = "Forces the next card draw to be a Club";
                     typeKey = "draw_club";
                     break;
-                case "Face":
+                case "face":
                     name = "Draw Face Card";
-                    description = "Forces community card draws to be face cards (Jack, Queen, King)";
+                    description = "Forces the next card draw to be a face card";
                     typeKey = "draw_face";
                     break;
-                case "High":
+                case "high":
                     name = "Draw High Card";
-                    description = "Forces community card draws to be 10 or higher (10, Jack, Queen, King, Ace)";
+                    description = "Forces the next card draw to have a rank of 10 or higher";
                     typeKey = "draw_high";
                     break;
-                case "Low":
+                case "low":
                     name = "Draw Low Card";
-                    description = "Forces community card draws to be 5 or lower (5, 4, 3, 2, Ace)";
+                    description = "Forces the next card draw to have a rank of 5 or lower";
                     typeKey = "draw_low";
                     break;
-                case "HigherThanLast":
+                case "higher_than_last":
                     name = "Draw Higher";
-                    description = "Forces community card draws to have a rank equal to or higher than the previous draw";
+                    description = "Forces the next card draw to have a rank equal to or higher than the previous draw";
                     typeKey = "draw_higher_than_last";
                     break;
-                case "LowerThanLast":
+                case "lower_than_last":
                     name = "Draw Lower";
-                    description = "Forces community card draws to have a rank equal to or lower than the previous draw";
+                    description = "Forces the next card draw to have a rank equal to or lower than the previous draw";
                     typeKey = "draw_lower_than_last";
                     break;
-                case "SameSuitAsLast":
+                case "same_suit_as_last":
                     name = "Draw Same Suit";
-                    description = "Forces community card draws to have the same suit as the previous draw";
+                    description = "Forces the next card draw to have the same suit as the previous draw";
                     typeKey = "draw_same_suit_as_last";
                     break;
                 default:
                     name = `Draw ${ruleStr}`;
-                    description = `Community card draws follow the ${ruleStr} rule`;
-                    typeKey = `draw_${ruleStr.toLowerCase()}`;
+                    description = `Draws follow the ${ruleStr} rule`;
+                    typeKey = `draw_${ruleStr}`;
                     break;
             }
         }
     }
 
-    if (typeof mod.expiry === "string") {
-        if (mod.expiry.toLowerCase().includes("gameend")) {
-            duration = "Duration: Game";
-        }
+    if (mod.expiry === "on_game_end") {
+        duration = "Duration: Game";
     } else if (mod.expiry && typeof mod.expiry === "object") {
-        if ("onCommunityDraw" in mod.expiry || "OnCommunityDraw" in mod.expiry) {
-            const count = mod.expiry.onCommunityDraw?.count ?? mod.expiry.OnCommunityDraw?.count ?? 1;
-            duration = `Duration: ${count} Community Draw${count > 1 ? "s" : ""}`;
-
-        } else if ("onPlayerTurn" in mod.expiry || "OnPlayerTurn" in mod.expiry) {
-            const count = mod.expiry.onPlayerTurn?.count ?? mod.expiry.OnPlayerTurn?.count ?? 1;
+        if ("on_card_draw" in mod.expiry) {
+            const count = mod.expiry.on_card_draw?.count ?? 1;
+            duration = `Duration: ${count} Draw${count > 1 ? "s" : ""}`;
+        } else if ("on_player_turn" in mod.expiry) {
+            const count = mod.expiry.on_player_turn?.count ?? 1;
             duration = `Duration: ${count} Turn Rotation${count > 1 ? "s" : ""}`;
-
-        } else if ("onRoundEnd" in mod.expiry || "OnRoundEnd" in mod.expiry) {
-            const count = mod.expiry.onRoundEnd?.count ?? mod.expiry.OnRoundEnd?.count ?? 1;
+        } else if ("on_round_end" in mod.expiry) {
+            const count = mod.expiry.on_round_end?.count ?? 1;
             duration = `Duration: ${count} Round${count > 1 ? "s" : ""}`;
-
-        } else if ("onHandEnd" in mod.expiry || "OnHandEnd" in mod.expiry) {
-            const count = mod.expiry.onHandEnd?.count ?? mod.expiry.OnHandEnd?.count ?? 1;
+        } else if ("on_hand_end" in mod.expiry) {
+            const count = mod.expiry.on_hand_end?.count ?? 1;
             duration = `Duration: ${count} Hand${count > 1 ? "s" : ""}`;
         }
     }
@@ -585,11 +647,13 @@ export const CardFaces: React.FC<CardFacesProps> = ({ card, cardType }) => {
                 {cardType === "playing" && playingInfo && !isJoker && (
                     <>
                         <span>{playingInfo?.rank}</span>
-                        <img
-                            src={getAssetUrl(`/src/assets/suits/${playingInfo?.suitSymbol}.png`)}
-                            alt=""
-                            draggable={false}
-                        />
+                        {playingInfo.suitSymbol && (
+                            <img
+                                src={getAssetUrl(`/src/assets/suits/${playingInfo.suitSymbol}.png`)}
+                                alt=""
+                                draggable={false}
+                            />
+                        )}
                     </>
                 )}
 

@@ -2,11 +2,334 @@
  * Handles special card related logic
  */
 
+use std::collections::HashMap;
 use std::fmt;
 use rand::RngExt;
 use serde::Serialize;
 
-use crate::{ExpandedCard, Game, GameError, HandType, MoveAction, MoveEvent, Rank, Suit, poker::Hand};
+use crate::{ExpandedCard, Game, GameError, HandType, MoveAction, MoveEvent, Rank, Suit, poker::{Card, Hand}};
+
+#[derive(Default, Clone)]
+pub(crate) struct SpecialState {
+    pub(crate) modifiers: RoundModifiers,
+    pub(crate) rounds_since_ante_up: u32,
+    pub(crate) ante_up_drawn_this_hand: bool,
+    pub(crate) hand_bets: HashMap<usize, i32>,
+}
+impl SpecialState {
+    pub(crate) fn active_modifiers(&self) -> &[Modifier] {
+        &self.modifiers.active
+    }
+
+    pub(crate) fn pot_multiplier(&self) -> f64 {
+        self.modifiers.vars.pot_multiplier
+    }
+
+    pub(crate) fn ante_multiplier(&self) -> f64 {
+        self.modifiers.vars.ante_multiplier
+    }
+
+    pub(crate) fn gamble_success_chance(&self) -> f64 {
+        self.modifiers.vars.gamble_success_chance
+    }
+
+    pub(crate) fn blackjack_active(&self) -> bool {
+        self.modifiers.blackjack_active()
+    }
+
+    pub(crate) fn specials_blocked(&self) -> bool {
+        self.modifiers.specials_blocked()
+    }
+
+    pub(crate) fn raises_blocked(&self) -> bool {
+        self.modifiers.raises_blocked()
+    }
+
+    pub(crate) fn invalidated_hands(&self) -> Vec<HandType> {
+        self.modifiers.invalidated_hands()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrawTarget {
+    Community,
+    Hole { player_id: usize },
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BetKind {
+    Blind,
+    Call,
+    Raise,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(crate) enum GameEvent {
+    HandStarted,
+    TurnAdvanced { player_id: usize },
+    StreetEnded,
+    CardDrawn { target: DrawTarget, card: ExpandedCard },
+    PlayerBet { player_id: usize, amount: i32, kind: BetKind },
+    BetWithdrawn { player_id: usize, amount: i32 },
+    PlayerFolded { player_id: usize, total_bet: i32 },
+    ShowdownResolved { payouts: Vec<(usize, i32)> },
+    HandEnded,
+    GameEnded,
+    SpecialPlayed { player_id: usize, card: SpecialCard },
+    SpecialDiscarded { player_id: usize, card: SpecialCard },
+    SpecialReceived { player_id: usize, card: SpecialCard },
+}
+
+pub(crate) fn on_event(event: GameEvent, game: &mut Game, move_events: &mut Vec<MoveEvent>) {
+    match event {
+        GameEvent::HandStarted => {
+            game.special.ante_up_drawn_this_hand = false;
+            game.special.hand_bets.clear();
+        }
+        GameEvent::TurnAdvanced { player_id } => {
+            let expired = game.special.modifiers.player_turn(player_id);
+            clear_modifier_effects(expired, game);
+        }
+        GameEvent::StreetEnded => {
+            let expired = game.special.modifiers.round_ended();
+            clear_modifier_effects(expired, game);
+        }
+        GameEvent::CardDrawn { target, .. } => {
+            let expired = game.special.modifiers.card_draw(target);
+            clear_modifier_effects(expired, game);
+            if let DrawTarget::Hole { player_id } = target {
+                if game.ctx.special_card_limit > 0 && game.ctx.rng.random_bool(0.002) {
+                    let _ = give_special_card(SpecialCard::Draw, 1, true, player_id, game, move_events);
+                }
+            }
+        }
+        GameEvent::PlayerBet { player_id, amount, .. } => {
+            if amount > 0 {
+                *game.special.hand_bets.entry(player_id).or_insert(0) += amount;
+                for m in &mut game.special.modifiers.active {
+                    if let ModifierEffect::BetRebate {
+                        player_id: p_id,
+                        accumulated_bet,
+                        ..
+                    } = &mut m.effect
+                    {
+                        if *p_id == player_id {
+                            *accumulated_bet += amount;
+                        }
+                    }
+                }
+            }
+        }
+        GameEvent::BetWithdrawn { player_id, amount } => {
+            if let Some(total) = game.special.hand_bets.get_mut(&player_id) {
+                *total = (*total - amount).max(0);
+            }
+            for m in &mut game.special.modifiers.active {
+                if let ModifierEffect::BetRebate {
+                    player_id: p_id,
+                    accumulated_bet,
+                    ..
+                } = &mut m.effect
+                {
+                    if *p_id == player_id {
+                        *accumulated_bet = (*accumulated_bet - amount).max(0);
+                    }
+                }
+            }
+        }
+        GameEvent::PlayerFolded { player_id, total_bet } => {
+            if total_bet > 0 {
+                let rebate_rate = game.special.modifiers.active.iter().find_map(|m| match m.effect {
+                    ModifierEffect::LossInsurance {
+                        player_id: p_id,
+                        rebate_rate,
+                    } if p_id == player_id => Some(rebate_rate),
+                    _ => None,
+                });
+                if let Some(rate) = rebate_rate {
+                    let refund = ((total_bet as f64) * rate).round() as i32;
+                    if refund > 0 {
+                        if let Ok(idx) = game.get_player_index(player_id) {
+                            game.players[idx].chips += refund;
+                        }
+                    }
+                    game.special.modifiers.active.retain(|m| {
+                        !matches!(
+                            m.effect,
+                            ModifierEffect::LossInsurance { player_id: p_id, .. } if p_id == player_id
+                        )
+                    });
+                }
+            }
+        }
+        GameEvent::ShowdownResolved { payouts } => {
+            let active_insurances: Vec<(usize, f64)> = game
+                .special
+                .modifiers
+                .active
+                .iter()
+                .filter_map(|m| match m.effect {
+                    ModifierEffect::LossInsurance {
+                        player_id,
+                        rebate_rate,
+                    } => Some((player_id, rebate_rate)),
+                    _ => None,
+                })
+                .collect();
+
+            for (player_id, rate) in active_insurances {
+                let Ok(idx) = game.get_player_index(player_id) else {
+                    continue;
+                };
+                if game.players[idx].folded {
+                    continue;
+                }
+                let won: i32 = payouts
+                    .iter()
+                    .filter(|(id, _)| *id == player_id)
+                    .map(|(_, amt)| *amt)
+                    .sum();
+                let spent = game
+                    .special
+                    .hand_bets
+                    .get(&player_id)
+                    .copied()
+                    .unwrap_or(game.players[idx].total_bet);
+                let net_loss = (spent - won).max(0);
+                let refund = ((net_loss as f64) * rate).round() as i32;
+                if refund > 0 {
+                    game.players[idx].chips += refund;
+                }
+            }
+
+            game.special
+                .modifiers
+                .active
+                .retain(|m| !matches!(m.effect, ModifierEffect::LossInsurance { .. }));
+        }
+        GameEvent::HandEnded => {
+            let stipend_payout = (game.ctx.blind_size as f64 * game.special.ante_multiplier()).round() as i32;
+            if stipend_payout > 0 {
+                let stipend_recipients: Vec<usize> = game
+                    .special
+                    .modifiers
+                    .active
+                    .iter()
+                    .filter_map(|m| match m.effect {
+                        ModifierEffect::ChipStipend { player_id } => Some(player_id),
+                        _ => None,
+                    })
+                    .collect();
+                for player_id in stipend_recipients {
+                    if let Ok(idx) = game.get_player_index(player_id) {
+                        game.players[idx].chips += stipend_payout;
+                    }
+                }
+            }
+
+            if game.special.ante_up_drawn_this_hand {
+                game.special.rounds_since_ante_up = 0;
+            } else {
+                game.special.rounds_since_ante_up = game.special.rounds_since_ante_up.saturating_add(1);
+            }
+            game.special.ante_up_drawn_this_hand = false;
+            game.special.hand_bets.clear();
+
+            let expired = game.special.modifiers.hand_ended();
+            for m in &expired {
+                if let ModifierEffect::BetRebate {
+                    player_id,
+                    rebate_rate,
+                    accumulated_bet,
+                } = m.effect
+                {
+                    let payout = ((accumulated_bet as f64) * rebate_rate).round() as i32;
+                    if payout > 0 {
+                        if let Ok(idx) = game.get_player_index(player_id) {
+                            game.players[idx].chips += payout;
+                        }
+                    }
+                }
+            }
+            clear_modifier_effects(expired, game);
+        }
+        GameEvent::GameEnded => {
+            let expired = game.special.modifiers.active.clone();
+            clear_modifier_effects(expired, game);
+            game.special.modifiers.game_ended();
+            game.special.rounds_since_ante_up = 0;
+            game.special.ante_up_drawn_this_hand = false;
+            game.special.hand_bets.clear();
+        }
+        GameEvent::SpecialPlayed { player_id, .. } => {
+            if game.ctx.rng.random_bool(0.005) {
+                let _ = give_special_card(SpecialCard::Special, 1, true, player_id, game, move_events);
+            }
+        }
+        GameEvent::SpecialDiscarded { player_id, .. } => {
+            if game.ctx.rng.random_bool(0.01) {
+                // should never fail so long as player_id and game are valid
+                let _ = give_special_card(SpecialCard::Discard, 1, true, player_id, game, move_events);
+            }
+        }
+        GameEvent::SpecialReceived { card, .. } => {
+            if card == SpecialCard::AnteUp {
+                game.special.rounds_since_ante_up = 0;
+                game.special.ante_up_drawn_this_hand = true;
+            }
+        }
+    }
+}
+
+fn clear_modifier_effects(expired: Vec<Modifier>, game: &mut Game) {
+    for m in expired {
+        m.remove_effect(game);
+    }
+}
+
+/**
+ * Draws a single card from the deck for either community or player hole placement,
+ * applying eligible active DrawRule modifiers and emitting GameEvent::CardDrawn.
+ */
+pub(crate) fn draw_deck_card(
+    game: &mut Game,
+    target: DrawTarget,
+    reference_card: Option<ExpandedCard>,
+    events: &mut Vec<MoveEvent>,
+) -> ExpandedCard {
+    let rules: Vec<Box<dyn Fn(&ExpandedCard) -> bool>> = game
+        .special
+        .modifiers
+        .active
+        .iter()
+        .filter_map(|m| match m.effect {
+            ModifierEffect::ForceDraw { rule, scope } => {
+                let applies = match (target, scope) {
+                    (DrawTarget::Community, _) => true,
+                    (DrawTarget::Hole { .. }, DrawScope::AllDraws) => true,
+                    _ => false,
+                };
+                if applies {
+                    Some(rule.match_fn(reference_card))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect();
+
+    let card = if let Some(index) = game.deck.iter().rposition(|c| rules.iter().all(|r| r(c))) {
+        game.deck.remove(index)
+    } else {
+        ExpandedCard::Unmarked
+    };
+
+    on_event(GameEvent::CardDrawn { target, card }, game, events);
+    card
+}
 
 #[derive(Default, Clone)]
 pub(crate) struct RoundModifiers {
@@ -80,14 +403,26 @@ impl RoundModifiers {
         expired
     }
 
-    pub(crate) fn community_draw(&mut self) -> Vec<Modifier> {
+    pub(crate) fn card_draw(&mut self, target: DrawTarget) -> Vec<Modifier> {
         let mut expired = Vec::new();
 
         self.active.retain_mut(|m| {
+            let should_tick = match (m.effect, target) {
+                (ModifierEffect::ForceDraw { .. }, DrawTarget::Community) => true,
+                (
+                    ModifierEffect::ForceDraw {
+                        scope: DrawScope::AllDraws,
+                        ..
+                    },
+                    DrawTarget::Hole { .. },
+                ) => true,
+                _ => false,
+            };
+
             let retain = match m.expiry {
-                ModifierExpiry::OnCommunityDraw { count } => {
+                ModifierExpiry::OnCardDraw { count } if should_tick => {
                     match count {
-                        2.. => { m.expiry = ModifierExpiry::OnCommunityDraw { count: count - 1 }; true }
+                        2.. => { m.expiry = ModifierExpiry::OnCardDraw { count: count - 1 }; true }
                         _ => false
                     }
                 },
@@ -146,53 +481,97 @@ impl RoundModifiers {
         }).collect()
     }
 
-    pub(crate) fn draw_rule(&self, game: &Game) -> impl Fn(&ExpandedCard) -> bool + 'static {
-        let rules: Vec<Box<dyn Fn(&ExpandedCard) -> bool>> = self.active.iter().filter_map(|m| match m.effect {
-            ModifierEffect::ForceCommunityDraw(rule) => Some(rule.match_fn(game)),
-            _ => None,
-        }).collect();
+    fn combine_or_add_modifiers(&mut self, modifier: Modifier, stack_mode: StackMode) {
+        if stack_mode == StackMode::Separate {
+            self.active.push(modifier);
+            self.recompute_vars();
+            return;
+        }
 
-        move |c| rules.iter().all(|r| r(c))        
-    }
-
-    fn combine_or_add_modifiers(&mut self, modifier: Modifier) {
         for i in 0..self.active.len() {
-            let effects_match = match (&self.active[i].effect, &modifier.effect) {
-                (ModifierEffect::AnteMultiplier { .. }, ModifierEffect::AnteMultiplier { .. }) => true,
-                (a, b) => a == b,
+            let effects_match = match (&self.active[i].effect, &modifier.effect, stack_mode) {
+                (
+                    ModifierEffect::AnteMultiplier { .. },
+                    ModifierEffect::AnteMultiplier { .. },
+                    StackMode::Effect,
+                )
+                | (
+                    ModifierEffect::PotMultiplier { .. },
+                    ModifierEffect::PotMultiplier { .. },
+                    StackMode::Effect,
+                ) => true,
+                (
+                    ModifierEffect::LossInsurance {
+                        player_id: first_id, ..
+                    },
+                    ModifierEffect::LossInsurance {
+                        player_id: second_id, ..
+                    },
+                    StackMode::Effect,
+                ) => first_id == second_id,
+                (a, b, _) => a == b,
             };
 
             if !effects_match || !self.active[i].expiry.type_equal(&modifier.expiry) {
                 continue;
             }
 
-            if let (
-                ModifierEffect::AnteMultiplier { multiplier: first_mult },
-                ModifierEffect::AnteMultiplier { multiplier: second_mult },
-            ) = (&mut self.active[i].effect, &modifier.effect)
-            {
-                *first_mult *= *second_mult;
+            match stack_mode {
+                StackMode::Effect => match (&mut self.active[i].effect, &modifier.effect) {
+                    (
+                        ModifierEffect::AnteMultiplier { multiplier: first_mult },
+                        ModifierEffect::AnteMultiplier { multiplier: second_mult },
+                    )
+                    | (
+                        ModifierEffect::PotMultiplier { multiplier: first_mult },
+                        ModifierEffect::PotMultiplier { multiplier: second_mult },
+                    ) => {
+                        *first_mult *= *second_mult;
+                    }
+                    (
+                        ModifierEffect::LossInsurance {
+                            rebate_rate: first_rate, ..
+                        },
+                        ModifierEffect::LossInsurance {
+                            rebate_rate: second_rate, ..
+                        },
+                    ) => {
+                        *first_rate = 1.0 - (1.0 - *first_rate) * (1.0 - *second_rate);
+                    }
+                    _ => {}
+                },
+                StackMode::Duration => {
+                    self.active[i].expiry = match (self.active[i].expiry, modifier.expiry) {
+                        (
+                            ModifierExpiry::OnCardDraw { count: first_count },
+                            ModifierExpiry::OnCardDraw { count: second_count },
+                        ) => ModifierExpiry::OnCardDraw {
+                            count: first_count + second_count,
+                        },
+                        (
+                            ModifierExpiry::OnPlayerTurn { count: first_count, player_id: _ },
+                            ModifierExpiry::OnPlayerTurn { count: second_count, player_id: p_id },
+                        ) => ModifierExpiry::OnPlayerTurn {
+                            count: first_count + second_count,
+                            player_id: p_id,
+                        },
+                        (
+                            ModifierExpiry::OnRoundEnd { count: first_count },
+                            ModifierExpiry::OnRoundEnd { count: second_count },
+                        ) => ModifierExpiry::OnRoundEnd {
+                            count: first_count + second_count,
+                        },
+                        (
+                            ModifierExpiry::OnHandEnd { count: first_count },
+                            ModifierExpiry::OnHandEnd { count: second_count },
+                        ) => ModifierExpiry::OnHandEnd {
+                            count: first_count + second_count,
+                        },
+                        _ => ModifierExpiry::OnGameEnd,
+                    };
+                }
+                StackMode::None | StackMode::Separate => {}
             }
-
-            self.active[i].expiry = match (self.active[i].expiry, modifier.expiry) {
-                (ModifierExpiry::OnCommunityDraw { count: first_count }, 
-                 ModifierExpiry::OnCommunityDraw { count: second_count }) 
-                  => ModifierExpiry::OnCommunityDraw { count: first_count + second_count },
-
-                (ModifierExpiry::OnPlayerTurn { count: first_count, player_id: _ }, 
-                 ModifierExpiry::OnPlayerTurn { count: second_count, player_id: p_id }) 
-                  => ModifierExpiry::OnPlayerTurn { count: first_count + second_count, player_id: p_id },
-
-                (ModifierExpiry::OnRoundEnd { count: first_count }, 
-                ModifierExpiry::OnRoundEnd { count: second_count }) 
-                  => ModifierExpiry::OnRoundEnd { count: first_count + second_count },
-
-                (ModifierExpiry::OnHandEnd { count: first_count }, 
-                 ModifierExpiry::OnHandEnd { count: second_count }) 
-                  => ModifierExpiry::OnHandEnd { count: first_count + second_count },
-
-                _ => ModifierExpiry::OnGameEnd,
-            };
 
             for source_id in modifier.source {
                 if !self.active[i].source.contains(&source_id) {
@@ -225,6 +604,14 @@ impl Default for ModifierVars {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DrawScope {
+    CommunityOnly,
+    AllDraws,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum DrawRule {
     Heart,
     Spade,
@@ -239,7 +626,7 @@ pub(crate) enum DrawRule {
     Nothing,
 }
 impl DrawRule {
-    pub(crate) fn match_fn(&self, game: &Game) -> Box<dyn Fn(&ExpandedCard) -> bool + 'static> {
+    pub(crate) fn match_fn(&self, reference_card: Option<ExpandedCard>) -> Box<dyn Fn(&ExpandedCard) -> bool + 'static> {
         match self {
             DrawRule::Heart => Box::new(|c| c.card().suit == Suit::Hearts || matches!(c, ExpandedCard::Joker(_))),
             DrawRule::Spade => Box::new(|c| c.card().suit == Suit::Spades || matches!(c, ExpandedCard::Joker(_))),
@@ -249,15 +636,15 @@ impl DrawRule {
             DrawRule::High => Box::new(|c| c.card().rank >= Rank::Ten || matches!(c, ExpandedCard::Joker(_))),
             DrawRule::Low => Box::new(|c| c.card().rank <= Rank::Five || c.card().rank == Rank::Ace || matches!(c, ExpandedCard::Joker(_))),
             DrawRule::HigherThanLast => {
-                let last_rank = game.community.last().map_or(Rank::None, |community| community.card().rank);
+                let last_rank = reference_card.map_or(Rank::None, |c| c.card().rank);
                 Box::new(move |c| c.card().rank >= last_rank || matches!(c, ExpandedCard::Joker(_)))
             },
             DrawRule::LowerThanLast => {
-                let last_rank = game.community.last().map_or(Rank::None, |community| community.card().rank);
+                let last_rank = reference_card.map_or(Rank::None, |c| c.card().rank);
                 Box::new(move |c| c.card().rank <= last_rank || matches!(c, ExpandedCard::Joker(_)))
             },
             DrawRule::SameSuitAsLast => {
-                let last_suit = game.community.last().map_or(Suit::Suitless, |community| community.card().suit);
+                let last_suit = reference_card.map_or(Suit::Suitless, |c| c.card().suit);
                 Box::new(move |c| c.card().suit == last_suit || matches!(c, ExpandedCard::Joker(_)))
             },
             DrawRule::Nothing => Box::new(|_| false),
@@ -266,6 +653,7 @@ impl DrawRule {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ModifierEffect {
     PotMultiplier { multiplier: f64 },
     AnteMultiplier { multiplier: f64 },
@@ -273,8 +661,11 @@ pub(crate) enum ModifierEffect {
     RaisesBlocked,
     SpecialsBlocked,
     BlackjackScoring,
-    ForceCommunityDraw(DrawRule),
+    ForceDraw { rule: DrawRule, scope: DrawScope },
     InvalidateHand(HandType),
+    LossInsurance { player_id: usize, rebate_rate: f64 },
+    BetRebate { player_id: usize, rebate_rate: f64, accumulated_bet: i32 },
+    ChipStipend { player_id: usize },
 }
 impl ModifierEffect {
     pub(crate) fn is_visible(&self, viewer_id: usize) -> bool {
@@ -286,8 +677,9 @@ impl ModifierEffect {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 enum ModifierExpiry {
-    OnCommunityDraw { count: usize },
+    OnCardDraw { count: usize },
     OnPlayerTurn { count: usize, player_id: usize },
     OnRoundEnd { count: usize },
     OnHandEnd { count: usize },
@@ -325,6 +717,123 @@ impl Modifier {
     }    
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardRole {
+    Economy,
+    Board,
+    Hand,
+    Chaos,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetKind {
+    None,
+    SelfCard,
+    CommunityCard,
+    OpponentCard,
+    OpponentPlayer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CardPool {
+    Standard,
+    WinnerDraft,
+    SpecialBurst,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StackMode {
+    None,
+    Duration,
+    Effect,
+    Separate,
+}
+
+pub(crate) struct UseContext<'a> {
+    pub player_id: usize,
+    pub player_idx: usize,
+    pub self_idx: usize,
+    pub target_id: usize,
+    pub card_index: usize,
+    pub stack_mode: StackMode,
+    pub game: &'a mut Game,
+    pub events: &'a mut Vec<MoveEvent>,
+}
+
+#[derive(Clone)]
+pub(crate) struct CardDef {
+    pub id: &'static str,
+    pub roles: Vec<CardRole>,
+    pub target: TargetKind,
+    pub stack_mode: StackMode,
+    pub pools: Vec<(CardPool, fn(f64) -> f64)>,
+    pub on_use: fn(UseContext<'_>) -> Result<(), GameError>,
+}
+
+fn add_force_draw(ctx: UseContext<'_>, rule: DrawRule) -> Result<(), GameError> {
+    ctx.game.special.modifiers.combine_or_add_modifiers(
+        Modifier {
+            effect: ModifierEffect::ForceDraw {
+                rule,
+                scope: DrawScope::AllDraws,
+            },
+            expiry: ModifierExpiry::OnCardDraw { count: 1 },
+            source: vec![ctx.player_id],
+        },
+        ctx.stack_mode,
+    );
+    Ok(())
+}
+
+fn add_invalidate_hand(ctx: UseContext<'_>, hand_type: HandType) -> Result<(), GameError> {
+    ctx.game.special.modifiers.combine_or_add_modifiers(
+        Modifier {
+            effect: ModifierEffect::InvalidateHand(hand_type),
+            expiry: ModifierExpiry::OnHandEnd { count: 1 },
+            source: vec![ctx.player_id],
+        },
+        ctx.stack_mode,
+    );
+    Ok(())
+}
+
+fn clear_hole_card_reveals(game: &mut Game, player_id: usize, card_index: usize) {
+    if let Ok(player_idx) = game.get_player_index(player_id) {
+        if let Some(vis) = game.players[player_idx].card_visibility.get_mut(card_index) {
+            vis.clear();
+        }
+    }
+    game.special.modifiers.active.retain(|m| {
+        !matches!(
+            m.effect,
+            ModifierEffect::RevealCard { target_id, card_index: idx, .. }
+            if target_id == player_id && idx == card_index
+        )
+    });
+}
+
+fn pick_weighted_index<T>(items: &[(T, f64)], rng: &mut impl RngExt) -> Option<usize> {
+    let total_weight: f64 = items.iter().map(|(_, w)| *w).filter(|w| *w > 0.0).sum();
+    if total_weight <= 0.0 {
+        return None;
+    }
+
+    let mut roll = rng.random_range(0.0..total_weight);
+    let mut last_positive = None;
+    for (idx, (_, weight)) in items.iter().enumerate() {
+        if *weight <= 0.0 {
+            continue;
+        }
+        last_positive = Some(idx);
+        if roll < *weight {
+            return Some(idx);
+        }
+        roll -= *weight;
+    }
+    last_positive
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct WinnerDraft {
     pub(crate) player_id: usize,
@@ -332,7 +841,7 @@ pub(crate) struct WinnerDraft {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum SpecialCard {
     // unique special cards - have distinct effects
     ReplaceCardSelf, // replaces own card with index with one from deck
@@ -349,7 +858,7 @@ pub(crate) enum SpecialCard {
     ChipBoost, // gain some chips
     ChipGamble, // chance to gain a significant number of chips or lose all chips
     Blackjack, // changes game eval to blackjack for 1 round - closest hand cards to 21 wins
-    // forces the next community card drawn to have one of the following qualities
+    // forces the next drawn community or owner hole card to have one of the following qualities
     DrawHeart,
     DrawSpade,
     DrawDiamond,
@@ -372,343 +881,994 @@ pub(crate) enum SpecialCard {
     HandSwap, // swap hands with a given opponent. fails (but still consumes the card) if their hand is better
     Joker, // convert selected community card into a joker
     SpecialSpread, // give 1 special card to everyone, and 3 to the user (bypassing special limits)
+    RankBoost, // increments selected hole card rank by 1. wraps aces
+    SuitMatch, // sets selected hole card suit to match another random card in hand
+    RedrawHand, // discards and redraws all hole cards
+    LossInsurance, // refunds 40% of lost chips this hand if used before round loss
+    BetRebate, // tracks player expenditure for 3 hands and returns 20%
+    ChipStipend, // pays 1x effective blind at the end of each hand for 4 hands
+    Draw, // deals 2 revealed hole cards to user, 1 revealed to opponents, 1 community card
 }
 impl fmt::Display for SpecialCard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+        f.write_str(self.def().id)
     }
 }
+
+pub(crate) const ALL_SPECIAL_CARDS: [SpecialCard; 41] = [
+    SpecialCard::ReplaceCardSelf,
+    SpecialCard::DrawCardSelf,
+    SpecialCard::ReplaceCardCommunity,
+    SpecialCard::RemoveCardCommunity,
+    SpecialCard::DrawCardCommunity,
+    SpecialCard::RevealOpponentCard,
+    SpecialCard::WithdrawBet,
+    SpecialCard::AnteUp,
+    SpecialCard::PotMult,
+    SpecialCard::RaiseBlock,
+    SpecialCard::SpecialBlock,
+    SpecialCard::ChipBoost,
+    SpecialCard::ChipGamble,
+    SpecialCard::Blackjack,
+    SpecialCard::DrawHeart,
+    SpecialCard::DrawSpade,
+    SpecialCard::DrawDiamond,
+    SpecialCard::DrawClub,
+    SpecialCard::DrawFace,
+    SpecialCard::DrawHigh,
+    SpecialCard::DrawLow,
+    SpecialCard::DrawHigherThanLast,
+    SpecialCard::DrawLowerThanLast,
+    SpecialCard::DrawSameSuitAsLast,
+    SpecialCard::InvalidateFlush,
+    SpecialCard::InvalidateStraight,
+    SpecialCard::InvalidateThreeOfAKind,
+    SpecialCard::InvalidateTwoPair,
+    SpecialCard::InvalidateFullHouse,
+    SpecialCard::Special,
+    SpecialCard::Discard,
+    SpecialCard::HandSwap,
+    SpecialCard::Joker,
+    SpecialCard::SpecialSpread,
+    SpecialCard::RankBoost,
+    SpecialCard::SuitMatch,
+    SpecialCard::RedrawHand,
+    SpecialCard::LossInsurance,
+    SpecialCard::BetRebate,
+    SpecialCard::ChipStipend,
+    SpecialCard::Draw,
+];
+
 impl SpecialCard {
+    pub(crate) fn def(self) -> CardDef {
+        match self {
+            SpecialCard::ReplaceCardSelf => CardDef {
+                id: "replace_card_self",
+                roles: vec![CardRole::Hand],
+                target: TargetKind::SelfCard,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 4.0 * l),
+                    (CardPool::WinnerDraft, |l| 4.0 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let reference_card = ctx.game.players[ctx.player_idx]
+                        .cards
+                        .get(ctx.card_index)
+                        .copied()
+                        .or_else(|| ctx.game.community.last().copied());
+                    let card = draw_deck_card(
+                        ctx.game,
+                        DrawTarget::Hole {
+                            player_id: ctx.player_id,
+                        },
+                        reference_card,
+                        ctx.events,
+                    );
+                    ctx.game.replace_hole_card(ctx.player_id, ctx.card_index, card, ctx.events)?;
+                    clear_hole_card_reveals(ctx.game, ctx.player_id, ctx.card_index);
+                    Ok(())
+                },
+            },
+            SpecialCard::DrawCardSelf => CardDef {
+                id: "draw_card_self",
+                roles: vec![CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.5 * l),
+                    (CardPool::WinnerDraft, |l| 1.5 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.deal_hole_card(ctx.player_id, ctx.events);
+                    let drawn_index = ctx.game.players[ctx.player_idx].cards.len() - 1;
+                    let all_player_ids = ctx.game.players.iter().map(|p| p.id).collect::<Vec<usize>>();
+                    ctx.game.players[ctx.player_idx].card_visibility[drawn_index] = all_player_ids;
+                    Ok(())
+                },
+            },
+            SpecialCard::ReplaceCardCommunity => CardDef {
+                id: "replace_card_community",
+                roles: vec![CardRole::Board],
+                target: TargetKind::CommunityCard,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |_| 10.0),
+                    (CardPool::WinnerDraft, |_| 10.0),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let reference_card = ctx.game.community.last().copied();
+                    let card = draw_deck_card(ctx.game, DrawTarget::Community, reference_card, ctx.events);
+                    ctx.game.replace_community_card(ctx.card_index, card, ctx.events)
+                },
+            },
+            SpecialCard::RemoveCardCommunity => CardDef {
+                id: "remove_card_community",
+                roles: vec![CardRole::Board],
+                target: TargetKind::CommunityCard,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.0 * l),
+                    (CardPool::WinnerDraft, |l| 1.0 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| ctx.game.remove_community_card(ctx.card_index, ctx.events),
+            },
+            SpecialCard::DrawCardCommunity => CardDef {
+                id: "draw_card_community",
+                roles: vec![CardRole::Board],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.0 * l),
+                    (CardPool::WinnerDraft, |l| 1.0 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.deal_community_cards(1, ctx.events);
+                    Ok(())
+                },
+            },
+            SpecialCard::RevealOpponentCard => CardDef {
+                id: "reveal_opponent_card",
+                roles: vec![CardRole::Hand],
+                target: TargetKind::OpponentCard,
+                stack_mode: StackMode::Separate,
+                pools: vec![
+                    (CardPool::Standard, |l| 4.0 * l),
+                    (CardPool::WinnerDraft, |l| 4.0 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let t_idx = ctx.game.get_player_index(ctx.target_id).unwrap_or(0);
+                    let t_p = &mut ctx.game.players[t_idx];
+                    if t_p.card_visibility[ctx.card_index].contains(&ctx.player_id) {
+                        return Err(GameError::CardAlreadyVisible);
+                    }
+                    t_p.card_visibility[ctx.card_index].push(ctx.player_id);
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::RevealCard {
+                                target_id: ctx.target_id,
+                                card_index: ctx.card_index,
+                                viewer_id: ctx.player_id,
+                            },
+                            expiry: ModifierExpiry::OnHandEnd { count: 1 },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    ctx.events.push(MoveEvent {
+                        actor_id: Some(ctx.player_id),
+                        action: MoveAction::RevealCard {
+                            target_id: ctx.target_id,
+                            card_index: ctx.card_index,
+                        },
+                        private: true,
+                    });
+                    Ok(())
+                },
+            },
+            SpecialCard::WithdrawBet => CardDef {
+                id: "withdraw_bet",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 0.9 * l.powi(2)),
+                    (CardPool::WinnerDraft, |l| 0.9 * l.powi(2)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let refund = withdraw_bet(ctx.player_id, ctx.player_idx, ctx.game, ctx.events);
+                    ctx.game.players[ctx.player_idx].chips += refund;
+                    ctx.game.force_fold_player(ctx.player_idx, ctx.events);
+                    Ok(())
+                },
+            },
+            SpecialCard::AnteUp => CardDef {
+                id: "ante_up",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::Effect,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.0 * l),
+                    (CardPool::WinnerDraft, |l| 1.0 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let ante_mult = 2.0;
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::AnteMultiplier { multiplier: ante_mult },
+                            expiry: ModifierExpiry::OnGameEnd,
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    ctx.game.special.modifiers.recompute_vars();
+                    give_special_card(SpecialCard::ChipBoost, 1, true, ctx.player_id, ctx.game, ctx.events)
+                },
+            },
+            SpecialCard::PotMult => CardDef {
+                id: "pot_mult",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::Effect,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.5 * l.powi(2)),
+                    (CardPool::WinnerDraft, |l| 1.5 * l.powi(2)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let pot_mult = 1.5;
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::PotMultiplier { multiplier: pot_mult },
+                            expiry: ModifierExpiry::OnHandEnd { count: 1 },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    ctx.game.special.modifiers.recompute_vars();
+                    Ok(())
+                },
+            },
+            SpecialCard::RaiseBlock => CardDef {
+                id: "raise_block",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 10.0),
+                    (CardPool::WinnerDraft, |_| 10.0),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::RaisesBlocked,
+                            expiry: ModifierExpiry::OnPlayerTurn {
+                                count: 1,
+                                player_id: ctx.player_id,
+                            },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    Ok(())
+                },
+            },
+            SpecialCard::SpecialBlock => CardDef {
+                id: "special_block",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 10.0),
+                    (CardPool::WinnerDraft, |_| 10.0),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::SpecialsBlocked,
+                            expiry: ModifierExpiry::OnPlayerTurn {
+                                count: 1,
+                                player_id: ctx.player_id,
+                            },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    Ok(())
+                },
+            },
+            SpecialCard::ChipBoost => CardDef {
+                id: "chip_boost",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 6.0 * l),
+                    (CardPool::WinnerDraft, |l| 6.0 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.players[ctx.player_idx].chips +=
+                        (ctx.game.ctx.blind_size as f64 * ctx.game.special.ante_multiplier() * 2.5) as i32;
+                    Ok(())
+                },
+            },
+            SpecialCard::ChipGamble => CardDef {
+                id: "chip_gamble",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.1 * l.powi(2)),
+                    (CardPool::WinnerDraft, |l| 1.1 * l.powi(2)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    if ctx.game.ctx.rng.random_bool(ctx.game.special.gamble_success_chance()) {
+                        ctx.game.players[ctx.player_idx].chips +=
+                            (ctx.game.ctx.blind_size as f64 * ctx.game.special.ante_multiplier() * 7.5) as i32;
+                        ctx.game.special.modifiers.vars.gamble_success_chance *= 0.9;
+                    } else {
+                        withdraw_bet(ctx.player_id, ctx.player_idx, ctx.game, ctx.events);
+                        let player = &mut ctx.game.players[ctx.player_idx];
+                        player.chips = (player.chips as f64 * 0.5).round() as i32;
+                        ctx.game.force_fold_player(ctx.player_idx, ctx.events);
+                    }
+                    Ok(())
+                },
+            },
+            SpecialCard::Blackjack => CardDef {
+                id: "blackjack",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 1.0),
+                    (CardPool::WinnerDraft, |l| 0.25 * l.powi(2)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    // toggles hand eval function to blackjack
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::BlackjackScoring,
+                            expiry: ModifierExpiry::OnHandEnd { count: 1 },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    // gives all players a draw card and allows them to take another turn
+                    give_special_card_to_all(SpecialCard::DrawCardSelf, 1, true, ctx.game, ctx.events)?;
+                    ctx.game.players.iter_mut().for_each(|p| p.turn_ended = false);
+                    Ok(())
+                },
+            },
+            SpecialCard::DrawHeart => CardDef {
+                id: "draw_heart",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 10.0),
+                    (CardPool::WinnerDraft, |_| 10.0),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::Heart),
+            },
+            SpecialCard::DrawSpade => CardDef {
+                id: "draw_spade",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 10.0),
+                    (CardPool::WinnerDraft, |_| 10.0),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::Spade),
+            },
+            SpecialCard::DrawDiamond => CardDef {
+                id: "draw_diamond",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 10.0),
+                    (CardPool::WinnerDraft, |_| 10.0),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::Diamond),
+            },
+            SpecialCard::DrawClub => CardDef {
+                id: "draw_club",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 10.0),
+                    (CardPool::WinnerDraft, |_| 10.0),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::Club),
+            },
+            SpecialCard::DrawFace => CardDef {
+                id: "draw_face",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 7.5),
+                    (CardPool::WinnerDraft, |_| 7.5),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::Face),
+            },
+            SpecialCard::DrawHigh => CardDef {
+                id: "draw_high",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 7.5),
+                    (CardPool::WinnerDraft, |_| 7.5),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::High),
+            },
+            SpecialCard::DrawLow => CardDef {
+                id: "draw_low",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 7.5),
+                    (CardPool::WinnerDraft, |_| 7.5),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::Low),
+            },
+            SpecialCard::DrawHigherThanLast => CardDef {
+                id: "draw_higher_than_last",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |l| 2.5 * l),
+                    (CardPool::WinnerDraft, |l| 2.5 * l),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::HigherThanLast),
+            },
+            SpecialCard::DrawLowerThanLast => CardDef {
+                id: "draw_lower_than_last",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |l| 2.5 * l),
+                    (CardPool::WinnerDraft, |l| 2.5 * l),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::LowerThanLast),
+            },
+            SpecialCard::DrawSameSuitAsLast => CardDef {
+                id: "draw_same_suit_as_last",
+                roles: vec![CardRole::Board, CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |l| 2.5 * l),
+                    (CardPool::WinnerDraft, |l| 2.5 * l),
+                ],
+                on_use: |ctx| add_force_draw(ctx, DrawRule::SameSuitAsLast),
+            },
+            SpecialCard::InvalidateFlush => CardDef {
+                id: "invalidate_flush",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 5.0),
+                    (CardPool::WinnerDraft, |_| 5.0),
+                ],
+                on_use: |ctx| add_invalidate_hand(ctx, HandType::Flush),
+            },
+            SpecialCard::InvalidateStraight => CardDef {
+                id: "invalidate_straight",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 5.0),
+                    (CardPool::WinnerDraft, |_| 5.0),
+                ],
+                on_use: |ctx| add_invalidate_hand(ctx, HandType::Straight),
+            },
+            SpecialCard::InvalidateThreeOfAKind => CardDef {
+                id: "invalidate_three_of_a_kind",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 5.0),
+                    (CardPool::WinnerDraft, |_| 5.0),
+                ],
+                on_use: |ctx| add_invalidate_hand(ctx, HandType::ThreeOfAKind),
+            },
+            SpecialCard::InvalidateTwoPair => CardDef {
+                id: "invalidate_two_pair",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 5.0),
+                    (CardPool::WinnerDraft, |_| 5.0),
+                ],
+                on_use: |ctx| add_invalidate_hand(ctx, HandType::TwoPair),
+            },
+            SpecialCard::InvalidateFullHouse => CardDef {
+                id: "invalidate_full_house",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |_| 5.0),
+                    (CardPool::WinnerDraft, |_| 5.0),
+                ],
+                on_use: |ctx| add_invalidate_hand(ctx, HandType::FullHouse),
+            },
+            SpecialCard::Special => CardDef {
+                id: "special",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![],
+                on_use: |ctx| {
+                    let count = 5;
+                    let pool: Vec<(SpecialCard, f64)> = ALL_SPECIAL_CARDS
+                        .iter()
+                        .copied()
+                        .filter_map(|card| {
+                            card.pool_weight(CardPool::SpecialBurst, 1.0)
+                                .filter(|w| *w > 0.0)
+                                .map(|w| (card, w))
+                        })
+                        .collect();
+
+                    if !pool.is_empty() {
+                        for _ in 0..count {
+                            if let Some(idx) = pick_weighted_index(&pool, &mut ctx.game.ctx.rng) {
+                                let next_card = pool[idx].0;
+                                give_special_card(next_card, 1, true, ctx.player_id, ctx.game, ctx.events)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            },
+            SpecialCard::Discard => CardDef {
+                id: "discard",
+                roles: vec![CardRole::Chaos, CardRole::Board],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![],
+                on_use: |ctx| {
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::ForceDraw {
+                                rule: DrawRule::Nothing,
+                                scope: DrawScope::CommunityOnly,
+                            },
+                            expiry: ModifierExpiry::OnHandEnd { count: 1 },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    Ok(())
+                },
+            },
+            SpecialCard::HandSwap => CardDef {
+                id: "hand_swap",
+                roles: vec![CardRole::Hand],
+                target: TargetKind::OpponentPlayer,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.2 * l),
+                    (CardPool::WinnerDraft, |l| 1.2 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let t_idx = ctx.game.get_player_index(ctx.target_id).unwrap_or(0);
+                    let target = &ctx.game.players[t_idx];
+                    let invalidated = ctx.game.special.invalidated_hands();
+                    let target_cards: Vec<ExpandedCard> = [&ctx.game.community[..], &target.cards[..]].concat();
+                    let target_hand = Hand::new(&target_cards, &ctx.game.ctx.hand_fns, &invalidated, ctx.game.ctx.hand_size);
+
+                    let player = &ctx.game.players[ctx.player_idx];
+                    let player_cards: Vec<ExpandedCard> = [&ctx.game.community[..], &player.cards[..]].concat();
+                    let player_hand = Hand::new(&player_cards, &ctx.game.ctx.hand_fns, &invalidated, ctx.game.ctx.hand_size);
+
+                    if player_hand > target_hand {
+                        let temp_cards = player.cards.clone();
+                        let temp_vis = player.card_visibility.clone();
+                        ctx.game.players[ctx.player_idx].cards = ctx.game.players[t_idx].cards.clone();
+                        ctx.game.players[ctx.player_idx].card_visibility = ctx.game.players[t_idx].card_visibility.clone();
+                        ctx.game.players[t_idx].cards = temp_cards;
+                        ctx.game.players[t_idx].card_visibility = temp_vis;
+
+                        for vis in &mut ctx.game.players[ctx.player_idx].card_visibility {
+                            vis.retain(|&id| id != ctx.player_id);
+                        }
+                        for vis in &mut ctx.game.players[t_idx].card_visibility {
+                            vis.retain(|&id| id != ctx.target_id);
+                        }
+
+                        for m in &mut ctx.game.special.modifiers.active {
+                            if let ModifierEffect::RevealCard { target_id, .. } = &mut m.effect {
+                                if *target_id == ctx.player_id {
+                                    *target_id = ctx.target_id;
+                                } else if *target_id == ctx.target_id {
+                                    *target_id = ctx.player_id;
+                                }
+                            }
+                        }
+                        ctx.game.special.modifiers.active.retain(|m| {
+                            !matches!(
+                                m.effect,
+                                ModifierEffect::RevealCard { target_id, viewer_id, .. } if target_id == viewer_id
+                            )
+                        });
+
+                        Ok(())
+                    } else {
+                        ctx.game.players[ctx.player_idx].special_cards.remove(ctx.self_idx);
+                        Err(GameError::HandSwapFailed)
+                    }
+                },
+            },
+            SpecialCard::Joker => CardDef {
+                id: "joker",
+                roles: vec![CardRole::Board],
+                target: TargetKind::CommunityCard,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.2 * l),
+                    (CardPool::WinnerDraft, |l| 1.2 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.replace_community_card(ctx.card_index, ExpandedCard::get_joker(), ctx.events)
+                },
+            },
+            SpecialCard::SpecialSpread => CardDef {
+                id: "special_spread",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::WinnerDraft, |l| 0.1 * l.powi(2))
+                ],
+                on_use: |ctx| {
+                    ctx.game.deal_special_cards(1, ctx.events);
+                    Ok(())
+                },
+            },
+            SpecialCard::RankBoost => CardDef {
+                id: "rank_boost",
+                roles: vec![CardRole::Hand],
+                target: TargetKind::SelfCard,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 2.5 * l),
+                    (CardPool::WinnerDraft, |l| 2.5 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let target_card = ctx.game.players[ctx.player_idx]
+                        .cards
+                        .get_mut(ctx.card_index)
+                        .ok_or(GameError::CardIndexInvalid)?;
+                    match target_card {
+                        ExpandedCard::PlayingCard(card) => {
+                            card.rank = match card.rank {
+                                Rank::None => Rank::Ace,
+                                Rank::Ace => Rank::Two,
+                                rank => Rank::from((rank as u8) + 1),
+                            };
+                            Ok(())
+                        }
+                        ExpandedCard::Unmarked => {
+                            *target_card = ExpandedCard::PlayingCard(Card {
+                                rank: Rank::Ace,
+                                suit: Suit::Suitless,
+                            });
+                            Ok(())
+                        }
+                        ExpandedCard::Joker(_) => Err(GameError::InvalidAction),
+                    }
+                },
+            },
+            SpecialCard::SuitMatch => CardDef {
+                id: "suit_match",
+                roles: vec![CardRole::Hand],
+                target: TargetKind::SelfCard,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 2.0 * l),
+                    (CardPool::WinnerDraft, |l| 2.0 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let cards = &ctx.game.players[ctx.player_idx].cards;
+                    if ctx.card_index >= cards.len() {
+                        return Err(GameError::CardIndexInvalid);
+                    }
+                    if !matches!(cards[ctx.card_index], ExpandedCard::PlayingCard(_)) {
+                        return Err(GameError::InvalidAction);
+                    }
+                    let other_suits: Vec<Suit> = cards
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, c)| {
+                            if i != ctx.card_index {
+                                if let ExpandedCard::PlayingCard(card) = c {
+                                    if card.suit != Suit::Suitless {
+                                        return Some(card.suit);
+                                    }
+                                }
+                            }
+                            None
+                        })
+                        .collect();
+                    if other_suits.is_empty() {
+                        return Err(GameError::InvalidAction);
+                    }
+                    let chosen_suit = other_suits[ctx.game.ctx.rng.random_range(0..other_suits.len())];
+                    if let ExpandedCard::PlayingCard(card) = &mut ctx.game.players[ctx.player_idx].cards[ctx.card_index]
+                    {
+                        card.suit = chosen_suit;
+                    }
+                    Ok(())
+                },
+            },
+            SpecialCard::RedrawHand => CardDef {
+                id: "redraw_hand",
+                roles: vec![CardRole::Hand],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![
+                    (CardPool::Standard, |l| 1.5 * l),
+                    (CardPool::WinnerDraft, |l| 1.5 * l),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    let card_count = ctx.game.players[ctx.player_idx].cards.len();
+                    for card_index in 0..card_count {
+                        let reference_card = ctx.game.players[ctx.player_idx]
+                            .cards
+                            .get(card_index)
+                            .copied()
+                            .or_else(|| ctx.game.community.last().copied());
+                        let new_card = draw_deck_card(
+                            ctx.game,
+                            DrawTarget::Hole {
+                                player_id: ctx.player_id,
+                            },
+                            reference_card,
+                            ctx.events,
+                        );
+                        ctx.game.replace_hole_card(ctx.player_id, card_index, new_card, ctx.events)?;
+                        clear_hole_card_reveals(ctx.game, ctx.player_id, card_index);
+                    }
+                    Ok(())
+                },
+            },
+            SpecialCard::LossInsurance => CardDef {
+                id: "loss_insurance",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::Effect,
+                pools: vec![
+                    (CardPool::Standard, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::WinnerDraft, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::LossInsurance {
+                                player_id: ctx.player_id,
+                                rebate_rate: 0.40,
+                            },
+                            expiry: ModifierExpiry::OnHandEnd { count: 1 },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    Ok(())
+                },
+            },
+            SpecialCard::BetRebate => CardDef {
+                id: "bet_rebate",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::Separate,
+                pools: vec![
+                    (CardPool::Standard, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::WinnerDraft, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::BetRebate {
+                                player_id: ctx.player_id,
+                                rebate_rate: 0.20,
+                                accumulated_bet: 0,
+                            },
+                            expiry: ModifierExpiry::OnHandEnd { count: 3 },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    Ok(())
+                },
+            },
+            SpecialCard::ChipStipend => CardDef {
+                id: "chip_stipend",
+                roles: vec![CardRole::Economy],
+                target: TargetKind::None,
+                stack_mode: StackMode::Duration,
+                pools: vec![
+                    (CardPool::Standard, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::WinnerDraft, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::ChipStipend {
+                                player_id: ctx.player_id,
+                            },
+                            expiry: ModifierExpiry::OnHandEnd { count: 4 },
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
+                    Ok(())
+                },
+            },
+            SpecialCard::Draw => CardDef {
+                id: "draw",
+                roles: vec![CardRole::Chaos, CardRole::Hand, CardRole::Board],
+                target: TargetKind::None,
+                stack_mode: StackMode::None,
+                pools: vec![],
+                on_use: |ctx| {
+                    let all_player_ids: Vec<usize> = ctx.game.players.iter().map(|p| p.id).collect();
+                    for _ in 0..2 {
+                        ctx.game.deal_hole_card(ctx.player_id, ctx.events);
+                        let p_idx = ctx.game.get_player_index(ctx.player_id)?;
+                        let drawn_index = ctx.game.players[p_idx].cards.len() - 1;
+                        ctx.game.players[p_idx].card_visibility[drawn_index] = all_player_ids.clone();
+                    }
+
+                    let other_player_ids: Vec<usize> = ctx
+                        .game
+                        .players
+                        .iter()
+                        .filter(|p| p.id != ctx.player_id && !p.folded)
+                        .map(|p| p.id)
+                        .collect();
+                    for target_id in other_player_ids {
+                        ctx.game.deal_hole_card(target_id, ctx.events);
+                        let t_idx = ctx.game.get_player_index(target_id)?;
+                        let drawn_index = ctx.game.players[t_idx].cards.len() - 1;
+                        ctx.game.players[t_idx].card_visibility[drawn_index] = all_player_ids.clone();
+                    }
+
+                    ctx.game.deal_community_cards(1, ctx.events);
+                    Ok(())
+                },
+            },
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn has_role(self, role: CardRole) -> bool {
+        self.def().roles.contains(&role)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn in_pool(self, pool: CardPool) -> bool {
+        self.def().pools.iter().any(|(p, _)| *p == pool)
+    }
+
+    pub(crate) fn pool_weight(self, pool: CardPool, luck: f64) -> Option<f64> {
+        self.def()
+            .pools
+            .into_iter()
+            .find(|(p, _)| *p == pool)
+            .map(|(_, weight_fn)| weight_fn(luck))
+    }
+
     pub(crate) fn use_card(&self, player_id: usize, target_id: Option<usize>, card_index: Option<usize>, game: &mut Game, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
         let t_id = target_id.unwrap_or(usize::MAX);
         let c_index = card_index.unwrap_or(usize::MAX);
 
-        if player_id != usize::MAX && game.get_player_index(player_id).is_err() {
-            return Err(GameError::InvalidTargetPlayer);
-        }
+        let player_idx = game
+            .get_player_index(player_id)
+            .map_err(|_| GameError::InvalidTargetPlayer)?;
 
-        if matches!(self, SpecialCard::RevealOpponentCard | SpecialCard::HandSwap) {
-            let t_idx_res = game.get_player_index(t_id);
-            if t_id == usize::MAX
-                || t_idx_res.is_err()
-                || t_idx_res.is_ok_and(|idx| game.players[idx].folded)
-            {
-                return Err(GameError::InvalidTargetPlayer);
-            }
-        }
-
-        fn check_player_owns_card(player_id: usize, c_index: usize, game: &Game) -> Result<(), GameError> {
-            if game.players[game.get_player_index(player_id).unwrap()].cards.get(c_index).is_none() {
+        fn check_player_owns_card(player_idx: usize, c_index: usize, game: &Game) -> Result<(), GameError> {
+            if game.players[player_idx].cards.get(c_index).is_none() {
                 Err(GameError::CardIndexInvalid)
             } else {
                 Ok(())
             }
         }
 
-        let player_idx = game.get_player_index(player_id).unwrap_or(0);
         let self_idx = game.players[player_idx]
             .special_cards
             .iter()
             .position(|s| s == self)
             .ok_or(GameError::CardIndexInvalid)?;
 
-        match self {
-            SpecialCard::ReplaceCardSelf => {
-                check_player_owns_card(player_id, c_index, game)?;
-                let card = game.deck.pop().unwrap_or(ExpandedCard::Unmarked);
-                // this should never fail, as the player has already been verified as owning the card
-                game.replace_hole_card(player_id, c_index, card, events).map_err(|_| unreachable!());
-            },
-            SpecialCard::DrawCardSelf => {
-                game.deal_hole_card(player_id, events);
-                let drawn_index = game.players[player_idx].cards.len() - 1;
-                let all_player_ids = game.players.iter().map(|p| p.id).collect::<Vec<usize>>();
-                game.players[player_idx].card_visibility[drawn_index] = all_player_ids;
-            },
-            SpecialCard::ReplaceCardCommunity => {
-                if c_index >= game.community.len() { return Err(GameError::CardIndexInvalid) }
-                let card = game.pop_next_deck_card();
-                // this operation should never fail, as the validity of the index has already been checked
-                game.replace_community_card(c_index, card, events)?;
-            },
-            SpecialCard::RemoveCardCommunity => {
-                game.remove_community_card(c_index, events)?;
-            },
-            SpecialCard::DrawCardCommunity => {
-                game.deal_community_cards(1, events);
-            },
-            SpecialCard::RevealOpponentCard => {
-                check_player_owns_card(t_id, c_index, game)?;
-                let t_idx = game.get_player_index(t_id).unwrap_or(0);
-                let t_p = &mut game.players[t_idx];
-                if !t_p.card_visibility[c_index].contains(&player_id) {
-                    t_p.card_visibility[c_index].push(player_id);
+        let def = self.def();
+
+        match def.target {
+            TargetKind::None => {}
+            TargetKind::SelfCard => {
+                check_player_owns_card(player_idx, c_index, game)?;
+            }
+            TargetKind::CommunityCard => {
+                if c_index >= game.community.len() {
+                    return Err(GameError::CardIndexInvalid);
                 }
-                game.modifiers.combine_or_add_modifiers(Modifier {
-                    effect: ModifierEffect::RevealCard { target_id: t_id, card_index: c_index, viewer_id: player_id },
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 },
-                    source: vec![player_id],
-                });
-                events.push(MoveEvent { 
-                    actor_id: Some(player_id), 
-                    action: MoveAction::RevealCard { target_id: t_id, card_index: c_index },
-                    private: true,
-                });
-
-            },
-            SpecialCard::WithdrawBet => {
-                let refund = withdraw_bet(player_id, player_idx, game);
-                let player = &mut game.players[player_idx];
-
-                player.chips += refund;
-                player.folded = true;
-                player.acted = true;
-            },
-            SpecialCard::AnteUp => {
-                let ante_mult = 2.0;
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::AnteMultiplier { multiplier: ante_mult }, 
-                    expiry: ModifierExpiry::OnGameEnd, 
-                    source: vec![player_id],
-                });
-
-                game.modifiers.recompute_vars();
-                give_special_card(SpecialCard::ChipBoost, 1, true, player_id, game, events)?;
-            },
-            SpecialCard::PotMult => {
-                let pot_mult = 1.4;
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::PotMultiplier { multiplier: pot_mult }, 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-                
-                game.modifiers.recompute_vars();
-            },
-            SpecialCard::RaiseBlock => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::RaisesBlocked, 
-                    expiry: ModifierExpiry::OnPlayerTurn { count: 1, player_id }, 
-                    source: vec![player_id],
-                })
-            },
-            SpecialCard::SpecialBlock => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::SpecialsBlocked, 
-                    expiry: ModifierExpiry::OnPlayerTurn { count: 1, player_id }, 
-                    source: vec![player_id],
-                })
-            },
-            SpecialCard::ChipBoost => {
-                game.players[player_idx].chips += (game.ctx.blind_size as f64 * game.modifiers.vars.ante_multiplier * 2.5) as i32;
-            },
-            SpecialCard::ChipGamble => {
-                if game.ctx.rng.random_bool(game.modifiers.vars.gamble_success_chance) {
-                    game.players[player_idx].chips += (game.ctx.blind_size as f64 * game.modifiers.vars.ante_multiplier * 7.5) as i32;
-                    game.modifiers.vars.gamble_success_chance *= 0.9;
-                } else {
-                    withdraw_bet(player_id, player_idx, game);
-                    let player = &mut game.players[player_idx];
-                    player.chips = (player.chips as f64 * 0.5).round() as i32;
-                    player.folded = true;
-                    player.acted = true;
-                }
-            },
-            SpecialCard::Blackjack => {
-                // toggles hand eval function to blackjack
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::BlackjackScoring, 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-
-                // gives all players a draw card and allows them to take another turn
-                give_special_card_to_all(SpecialCard::DrawCardSelf, 1, true, game, events)?;
-                game.players.iter_mut().for_each(|p| p.turn_ended = false);
-            },
-            SpecialCard::DrawHeart => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Heart), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawSpade => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Spade), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawDiamond => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Diamond), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawClub => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Club), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawFace => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Face), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawHigh => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::High), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawLow => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Low), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawHigherThanLast => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::HigherThanLast), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });                
-            },
-            SpecialCard::DrawLowerThanLast => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::LowerThanLast), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::DrawSameSuitAsLast => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::SameSuitAsLast), 
-                    expiry: ModifierExpiry::OnCommunityDraw { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::InvalidateFlush => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::InvalidateHand(HandType::Flush), 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::InvalidateStraight => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::InvalidateHand(HandType::Straight), 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::InvalidateThreeOfAKind => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::InvalidateHand(HandType::ThreeOfAKind), 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::InvalidateTwoPair => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::InvalidateHand(HandType::TwoPair), 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::InvalidateFullHouse => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::InvalidateHand(HandType::FullHouse), 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            // draws some special cards out of a preset equally weighted pool
-            // containing only cards with unique effects
-            SpecialCard::Special => {
-                let count = 5;
-                let permitted_cards: [SpecialCard; 16] = [
-                    SpecialCard::ReplaceCardSelf,
-                    SpecialCard::DrawCardSelf,
-                    SpecialCard::ReplaceCardCommunity,
-                    SpecialCard::RemoveCardCommunity,
-                    SpecialCard::DrawCardCommunity,
-                    SpecialCard::RevealOpponentCard,
-                    SpecialCard::WithdrawBet,
-                    SpecialCard::AnteUp,
-                    SpecialCard::PotMult,
-                    SpecialCard::RaiseBlock,
-                    SpecialCard::SpecialBlock,
-                    SpecialCard::ChipBoost,
-                    SpecialCard::ChipGamble,
-                    SpecialCard::Blackjack,
-                    SpecialCard::HandSwap,
-                    SpecialCard::Joker,
-                ];
-
-                for _ in 0..count {
-                    let next_card = permitted_cards[game.ctx.rng.random_range(0..permitted_cards.len())];
-                    give_special_card(next_card, 1, true, player_id, game, events)?;
-                }
-            },
-            SpecialCard::Discard => {
-                game.modifiers.combine_or_add_modifiers(Modifier { 
-                    effect: ModifierEffect::ForceCommunityDraw(DrawRule::Nothing), 
-                    expiry: ModifierExpiry::OnHandEnd { count: 1 }, 
-                    source: vec![player_id],
-                });
-            },
-            SpecialCard::HandSwap => {
-                if t_id == usize::MAX {
+            }
+            TargetKind::OpponentPlayer => {
+                if t_id == usize::MAX || t_id == player_id {
                     return Err(GameError::InvalidTargetPlayer);
                 }
-
-                // get target cards
-                let t_idx = game.get_player_index(t_id).unwrap_or(0);
-                let target = &game.players[t_idx];
-                let target_cards: Vec<ExpandedCard> = [&game.community[..], &target.cards[..]].concat();
-                let target_hand = Hand::new(&target_cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
-
-                // get player cards
-                let player = &game.players[player_idx];
-                let player_cards: Vec<ExpandedCard> = [&game.community[..], &player.cards[..]].concat();
-                let player_hand = Hand::new(&player_cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
-                
-                // if player is better than target, then swap
-                if player_hand > target_hand {
-                    let temp_player = player.cards.clone();
-                    game.players[player_idx].cards = game.players[t_idx].cards.clone();
-                    game.players[t_idx].cards = temp_player;
-                // otherwise, remove self and give a failure warning
-                } else {
-                    game.players[player_idx].special_cards.remove(self_idx);
-                    return Err(GameError::HandSwapFailed);
+                let t_idx = game.get_player_index(t_id).map_err(|_| GameError::InvalidTargetPlayer)?;
+                if game.players[t_idx].folded {
+                    return Err(GameError::InvalidTargetPlayer);
                 }
-            },
-            SpecialCard::Joker => {
-                if c_index >= game.community.len() { return Err(GameError::CardIndexInvalid) }
-                game.replace_community_card(c_index, ExpandedCard::get_joker(), events)?;
-            },
-            SpecialCard::SpecialSpread => {
-                // give 1 special card to all
-                game.deal_special_cards(1, events);
-            },
+            }
+            TargetKind::OpponentCard => {
+                if t_id == usize::MAX || t_id == player_id {
+                    return Err(GameError::InvalidTargetPlayer);
+                }
+                let t_idx = game.get_player_index(t_id).map_err(|_| GameError::InvalidTargetPlayer)?;
+                if game.players[t_idx].folded {
+                    return Err(GameError::InvalidTargetPlayer);
+                }
+                check_player_owns_card(t_idx, c_index, game)?;
+            }
         }
+
+        (def.on_use)(UseContext {
+            player_id,
+            player_idx,
+            self_idx,
+            target_id: t_id,
+            card_index: c_index,
+            stack_mode: def.stack_mode,
+            game,
+            events,
+        })?;
         
         game.players[player_idx].special_cards.remove(self_idx);
 
-        // special special card check
-        if game.ctx.rng.random_bool(0.005) {
-            give_special_card(SpecialCard::Special, 1, true, player_id, game, events)?;
-        }
+        on_event(
+            GameEvent::SpecialPlayed {
+                player_id,
+                card: *self,
+            },
+            game,
+            events,
+        );
 
         Ok(())
     }
@@ -717,108 +1877,98 @@ impl SpecialCard {
      * Plays card discard effects
      */
     pub(crate) fn discard_card(&self, player_id: usize, game: &mut Game, events: &mut Vec<MoveEvent>) -> Result<(), GameError> {
-        match self {
-            _ => {},
-        }
-
-        if game.ctx.rng.random_bool(0.01) {
-            // should never fail so long as player_id and game are valid
-            give_special_card(SpecialCard::Discard, 1, true, player_id, game, events)?;
-        }
+        on_event(
+            GameEvent::SpecialDiscarded {
+                player_id,
+                card: *self,
+            },
+            game,
+            events,
+        );
 
         Ok(())
     }
 
     pub(crate) fn from_str(card_name: &str) -> Option<Self> {
-        Some(match card_name.to_lowercase().as_str() {
-            "replacecardself" => SpecialCard::ReplaceCardSelf,
-            "drawcardself" => SpecialCard::DrawCardSelf,
-            "replacecardcommunity" => SpecialCard::ReplaceCardCommunity,
-            "removecardcommunity" => SpecialCard::RemoveCardCommunity,
-            "drawcardcommunity" => SpecialCard::DrawCardCommunity,
-            "revealopponentcard" => SpecialCard::RevealOpponentCard,
-            "withdrawbet" => SpecialCard::WithdrawBet,
-            "anteup" => SpecialCard::AnteUp,
-            "potmult" => SpecialCard::PotMult,
-            "raiseblock" => SpecialCard::RaiseBlock,
-            "specialblock" => SpecialCard::SpecialBlock,
-            "chipboost" => SpecialCard::ChipBoost,
-            "chipgamble" => SpecialCard::ChipGamble,
-            "blackjack" => SpecialCard::Blackjack,
-            "drawheart" => SpecialCard::DrawHeart,
-            "drawspade" => SpecialCard::DrawSpade,
-            "drawdiamond" => SpecialCard::DrawDiamond,
-            "drawclub" => SpecialCard::DrawClub,
-            "drawface" => SpecialCard::DrawFace,
-            "drawhigh" => SpecialCard::DrawHigh,
-            "drawlow" => SpecialCard::DrawLow,
-            "drawhigherthanlast" => SpecialCard::DrawHigherThanLast,
-            "drawlowerthanlast" => SpecialCard::DrawLowerThanLast,
-            "drawsamesuitaslast" => SpecialCard::DrawSameSuitAsLast,
-            "invalidateflush" => SpecialCard::InvalidateFlush,
-            "invalidatestraight" => SpecialCard::InvalidateStraight,
-            "invalidatethreeofakind" => SpecialCard::InvalidateThreeOfAKind,
-            "invalidatetwopair" => SpecialCard::InvalidateTwoPair,
-            "invalidatefullhouse" => SpecialCard::InvalidateFullHouse,
-            "special" => SpecialCard::Special,
-            "discard" => SpecialCard::Discard,
-            "handswap" => SpecialCard::HandSwap,
-            "joker" => SpecialCard::Joker,
-            _ => return None,
-        })
+        ALL_SPECIAL_CARDS
+            .iter()
+            .copied()
+            .find(|card| card.def().id == card_name)
     }
 
     pub(crate) fn draw_special_cards(count: usize, player_id: usize, game: &mut Game) -> Vec<SpecialCard> {
         let mut luck: f64 = 1.0;
         // increase luck as game goes on - better cards over time
-        luck *= (((game.games_played as f64).sqrt() - 1.0) / 3.0) + 1.0;
-        // increase luck for active player with least chips
-        let losing_player = game.players.iter().min_by(|x, y| 
-            (if x.folded { i32::MAX } else { x.chips + x.total_bet })
-            .cmp(&(if y.folded { i32::MAX } else { y.chips + y.total_bet }))
-        );
-        if let Some(p) = losing_player && p.id == player_id {
-            luck *= 1.4;
+        luck *= ((game.games_played as f64).sqrt() / 3.0) + 1.0;
+        // increase luck for active player with least chips (breaking ties randomly)
+        let min_wealth = game
+            .players
+            .iter()
+            .filter(|p| !p.folded)
+            .map(|p| p.chips + p.total_bet)
+            .min();
+        if let Some(min_w) = min_wealth {
+            let tied_ids: Vec<usize> = game
+                .players
+                .iter()
+                .filter(|p| !p.folded && p.chips + p.total_bet == min_w)
+                .map(|p| p.id)
+                .collect();
+            if !tied_ids.is_empty() {
+                let picked_id = tied_ids[game.ctx.rng.random_range(0..tied_ids.len())];
+                if picked_id == player_id {
+                    luck *= 1.4;
+                }
+            }
         }
 
         let active_players = game.players.iter().filter(|p| !p.folded).count().max(1) as f64;
         let mut cards_drawn: Vec<SpecialCard> = Vec::new();
         for _ in 0..count {
-            if game.rounds_since_ante_up >= ANTE_UP_PITY_MAX_ROUNDS {
-                game.record_special_card_received(SpecialCard::AnteUp);
+            if game.special.rounds_since_ante_up >= ANTE_UP_PITY_MAX_ROUNDS {
+                on_event(
+                    GameEvent::SpecialReceived {
+                        player_id,
+                        card: SpecialCard::AnteUp,
+                    },
+                    game,
+                    &mut Vec::new(),
+                );
                 cards_drawn.push(SpecialCard::AnteUp);
                 continue;
             }
 
-            let pity_bonus = if game.rounds_since_ante_up > 0 {
-                3.0 * (game.rounds_since_ante_up as f64).powi(2) / active_players
+            let pity_bonus = if game.special.rounds_since_ante_up > 0 {
+                3.0 * (game.special.rounds_since_ante_up as f64).powi(2) / active_players
             } else {
                 0.0
             };
 
-            let mut special_card_sums: Vec<(SpecialCard, f64)> = Vec::new();
-            let mut sum: f64 = 0.0;
-            // build binary searchable sum vector
-            for (card, weight_fn) in SPECIAL_CARD_WEIGHT_FNS {
-                special_card_sums.push((card, sum));
-                // anteup is a special case - should become more likely over time
-                let mut weight = weight_fn(luck);
+            let mut weighted_cards: Vec<(SpecialCard, f64)> = Vec::new();
+            for card in ALL_SPECIAL_CARDS {
+                let Some(mut weight) = card.pool_weight(CardPool::Standard, luck) else {
+                    continue;
+                };
                 if card == SpecialCard::AnteUp {
                     weight += pity_bonus;
                 }
-                sum += weight;
+                if weight > 0.0 {
+                    weighted_cards.push((card, weight));
+                }
             }
 
-            // and then get the result of the roll
-            let roll = game.ctx.rng.random_range::<f64, _>(0.0..sum);
-            let card_idx = match special_card_sums.binary_search_by(|(_, s)| s.total_cmp(&roll)) {
-                Err(i) => i - 1,
-                Ok(i) => i
-            };
-
-            let drawn_card = special_card_sums[card_idx].0;
-            game.record_special_card_received(drawn_card);
-            cards_drawn.push(drawn_card);
+            if let Some(card_idx) = pick_weighted_index(&weighted_cards, &mut game.ctx.rng) {
+                let drawn_card = weighted_cards[card_idx].0;
+                on_event(
+                    GameEvent::SpecialReceived {
+                        player_id,
+                        card: drawn_card,
+                    },
+                    game,
+                    &mut Vec::new(),
+                );
+                cards_drawn.push(drawn_card);
+            }
         }
 
         cards_drawn
@@ -831,66 +1981,25 @@ impl SpecialCard {
     pub(crate) fn draw_winner_draft_options(count: usize, pot_ratio: f64, game: &mut Game) -> Vec<SpecialCard> {
         let linear_t = ((pot_ratio - 0.02) / 0.45).clamp(0.0, 1.0);
         let t = linear_t * linear_t;
-        let high_mult = 0.02 + 2.98 * t;
-        let mid_mult = 0.30 + 1.20 * t;
-        let low_mult = 1.80 - 1.40 * t;
+        let draft_luck = 0.1 + 3.4 * t;
 
-        let mut pool: Vec<(SpecialCard, f64)> = vec![
-            // good cards
-            (SpecialCard::PotMult, 3.0 * high_mult),
-            (SpecialCard::ChipBoost, 4.0 * high_mult),
-            (SpecialCard::ChipGamble, 2.5 * high_mult),
-            (SpecialCard::WithdrawBet, 2.2 * high_mult),
-            (SpecialCard::Joker, 2.5 * high_mult),
-            (SpecialCard::HandSwap, 2.2 * high_mult),
-            (SpecialCard::AnteUp, 1.5 * high_mult),
-            (SpecialCard::Blackjack, 0.4 * high_mult),
-            // mid-tier cards
-            (SpecialCard::ReplaceCardSelf, 3.5 * mid_mult),
-            (SpecialCard::RevealOpponentCard, 3.5 * mid_mult),
-            (SpecialCard::DrawCardSelf, 2.0 * mid_mult),
-            (SpecialCard::DrawCardCommunity, 2.0 * mid_mult),
-            (SpecialCard::ReplaceCardCommunity, 2.5 * mid_mult),
-            // situational cards
-            (SpecialCard::RemoveCardCommunity, 2.0 * low_mult),
-            (SpecialCard::RaiseBlock, 2.8 * low_mult),
-            (SpecialCard::SpecialBlock, 2.8 * low_mult),
-            (SpecialCard::DrawHeart, 3.2 * low_mult),
-            (SpecialCard::DrawSpade, 3.2 * low_mult),
-            (SpecialCard::DrawDiamond, 3.2 * low_mult),
-            (SpecialCard::DrawClub, 3.2 * low_mult),
-            (SpecialCard::DrawFace, 2.6 * low_mult),
-            (SpecialCard::DrawHigh, 2.6 * low_mult),
-            (SpecialCard::DrawLow, 2.6 * low_mult),
-            (SpecialCard::DrawHigherThanLast, 2.4 * low_mult),
-            (SpecialCard::DrawLowerThanLast, 2.4 * low_mult),
-            (SpecialCard::DrawSameSuitAsLast, 2.4 * low_mult),
-            (SpecialCard::InvalidateFlush, 2.2 * low_mult),
-            (SpecialCard::InvalidateStraight, 2.2 * low_mult),
-            (SpecialCard::InvalidateThreeOfAKind, 2.2 * low_mult),
-            (SpecialCard::InvalidateTwoPair, 2.2 * low_mult),
-            (SpecialCard::InvalidateFullHouse, 2.2 * low_mult),
-        ];
+        let mut pool: Vec<(SpecialCard, f64)> = ALL_SPECIAL_CARDS
+            .iter()
+            .copied()
+            .filter_map(|card| {
+                card.pool_weight(CardPool::WinnerDraft, draft_luck)
+                    .filter(|w| *w > 0.0)
+                    .map(|w| (card, w))
+            })
+            .collect();
 
         let target_count = count.min(pool.len());
         let mut chosen = Vec::with_capacity(target_count);
 
         for _ in 0..target_count {
-            let total_weight: f64 = pool.iter().map(|(_, w)| *w).sum();
-            if total_weight <= 0.0 {
+            let Some(picked_idx) = pick_weighted_index(&pool, &mut game.ctx.rng) else {
                 break;
-            }
-
-            let mut roll = game.ctx.rng.random_range::<f64, _>(0.0..total_weight);
-            let mut picked_idx = pool.len() - 1;
-            for (idx, (_, weight)) in pool.iter().enumerate() {
-                if roll < *weight {
-                    picked_idx = idx;
-                    break;
-                }
-                roll -= *weight;
-            }
-
+            };
             let (card, _) = pool.swap_remove(picked_idx);
             chosen.push(card);
         }
@@ -900,42 +2009,6 @@ impl SpecialCard {
 }
 
 pub(crate) const ANTE_UP_PITY_MAX_ROUNDS: u32 = 12;
-
-// weight functions for special cards - determines end draw probability
-// takes a luck value l, determined through several factors, and produces a card. generally, better cards will scale better with luck
-static SPECIAL_CARD_WEIGHT_FNS: [(SpecialCard, fn(f64) -> f64); 31] = [
-    (SpecialCard::ReplaceCardSelf, |l| 4.0 * l),
-    (SpecialCard::DrawCardSelf, |l| 1.5 * l),
-    (SpecialCard::ReplaceCardCommunity, |_| 10.0),
-    (SpecialCard::RemoveCardCommunity, |l| 1.0 * l),
-    (SpecialCard::DrawCardCommunity, |l| 1.0 * l),
-    (SpecialCard::RevealOpponentCard, |l| 4.0 * l),
-    (SpecialCard::WithdrawBet, |l| 0.9 * l.powi(2)),
-    (SpecialCard::AnteUp, |l| 1.0 * l),
-    (SpecialCard::PotMult, |l| 1.5 * l.powi(2)),
-    (SpecialCard::RaiseBlock, |_| 10.0),
-    (SpecialCard::SpecialBlock, |_| 10.0),
-    (SpecialCard::ChipBoost, |l| 6.0 * l),
-    (SpecialCard::ChipGamble, |l| 1.1 * l.powi(2)),
-    (SpecialCard::Blackjack, |_| 1.0),
-    (SpecialCard::HandSwap, |l| 1.2 * l),
-    (SpecialCard::Joker, |l| 1.2 * l),
-    (SpecialCard::DrawHeart, |_| 10.0),
-    (SpecialCard::DrawSpade, |_| 10.0),
-    (SpecialCard::DrawDiamond, |_| 10.0),
-    (SpecialCard::DrawClub, |_| 10.0),
-    (SpecialCard::DrawFace, |_| 7.5),
-    (SpecialCard::DrawHigh, |_| 7.5),
-    (SpecialCard::DrawLow, |_| 7.5),
-    (SpecialCard::DrawHigherThanLast, |l| 2.5 * l),
-    (SpecialCard::DrawLowerThanLast, |l| 2.5 * l),
-    (SpecialCard::DrawSameSuitAsLast, |l| 2.5 * l),
-    (SpecialCard::InvalidateFlush, |_| 5.0),
-    (SpecialCard::InvalidateStraight, |_| 5.0),
-    (SpecialCard::InvalidateThreeOfAKind, |_| 5.0),
-    (SpecialCard::InvalidateTwoPair, |_| 5.0),
-    (SpecialCard::InvalidateFullHouse, |_| 5.0),
-];
 
 /**
  * Evaluation function for blackjack modifier
@@ -975,29 +2048,36 @@ pub(crate) fn evaluate_blackjack_hand(player_cards: &[ExpandedCard]) -> i32 {
     }
 }
 
-pub(crate) fn withdraw_bet(player_id: usize, player_idx: usize, game: &mut Game) -> i32 {
-    let mut refund = 0;
+pub(crate) fn withdraw_bet(player_id: usize, player_idx: usize, game: &mut Game, events: &mut Vec<MoveEvent>) -> i32 {
+    let tracked_total = game.special.hand_bets.get(&player_id).copied().unwrap_or(0);
+    let current_street_refund = game.players[player_idx].round_bet.min(tracked_total);
+    game.round_pool -= current_street_refund;
 
-    for pot in &mut game.pots {
-        if let Some(position) = pot.players.iter().position(|id| *id == player_id) {
-            let participant_count = pot.players.len() as i32;
-            if participant_count > 0 {
-                let contribution = pot.amount / participant_count;
-                pot.amount -= contribution;
-                refund += contribution;
+    let mut remaining_from_pots = (tracked_total - current_street_refund).max(0);
+    let mut refunded_from_pots = 0;
+
+    for pot in game.pots.iter_mut().rev() {
+        if pot.players.contains(&player_id) {
+            if remaining_from_pots > 0 {
+                let take = remaining_from_pots.min(pot.amount);
+                pot.amount -= take;
+                remaining_from_pots -= take;
+                refunded_from_pots += take;
             }
-
-            pot.players.remove(position);
+            pot.players.retain(|&id| id != player_id);
         }
     }
+    game.pots.retain(|pot| pot.amount > 0);
 
-    let current_street_refund = game.players[player_idx].round_bet;
-    refund += current_street_refund;
-    game.round_pool -= current_street_refund;
+    let refund = current_street_refund + refunded_from_pots;
 
     let player = &mut game.players[player_idx];
     player.total_bet = (player.total_bet - refund).max(0);
     player.round_bet = 0;
+
+    if refund > 0 {
+        on_event(GameEvent::BetWithdrawn { player_id, amount: refund }, game, events);
+    }
 
     refund
 }
@@ -1041,14 +2121,21 @@ pub(crate) fn give_special_card(special_card: SpecialCard, count: usize, ignore_
     }
 
     if given_cards > 0 {
-        game.record_special_card_received(special_card);
-    }
+        on_event(
+            GameEvent::SpecialReceived {
+                player_id,
+                card: special_card,
+            },
+            game,
+            events,
+        );
 
-    events.push(MoveEvent { 
-        actor_id: Some(player_id), 
-        action: MoveAction::DealSpecial { count: given_cards }, 
-        private: false 
-    });
+        events.push(MoveEvent { 
+            actor_id: Some(player_id), 
+            action: MoveAction::DealSpecial { count: given_cards }, 
+            private: false 
+        });
+    }
 
 
     if !ignore_limit && given_cards < count {

@@ -5,7 +5,1057 @@
 #[cfg(test)]
 mod tests {
     #[cfg(test)]
-    mod special_tests {}
+    mod special_tests {
+        use std::collections::HashSet;
+        use crate::Action::{Call, Fold, PlaySpecial, Raise};
+        use crate::poker::{Card, ExpandedCard, Rank, Suit};
+        use crate::special::*;
+        use crate::{ConfigPlayer, DeckType, Game, GameConfig, GameError, Round};
+
+        fn started_game() -> Game {
+            let mut game = Game::new();
+            let config = GameConfig {
+                players: vec![ConfigPlayer::Human { id: 0 }, ConfigPlayer::Human { id: 1 }],
+                rng_seed: 0,
+                blind_size: 20,
+                min_raise: 10,
+                starting_chips: 1000,
+                special_card_limit: 3,
+                deck_type: DeckType::Standard,
+                max_players: 2,
+                round_limit: 30,
+                max_bet_multiplier: None,
+            };
+            game.update_config(config).unwrap();
+            game.initialise().unwrap();
+            game.start().unwrap();
+            game
+        }
+
+        #[test]
+        fn test_card_registry_metadata_and_pools() {
+            let mut seen_cards = Vec::new();
+            let mut seen_ids = HashSet::new();
+
+            for card in ALL_SPECIAL_CARDS {
+                assert!(!seen_cards.contains(&card), "Duplicate variant in ALL_SPECIAL_CARDS: {:?}", card);
+                seen_cards.push(card);
+
+                let def = card.def();
+                assert!(!def.roles.is_empty(), "{:?} must have at least one CardRole", card);
+                assert!(
+                    !def.id.is_empty()
+                        && def.id.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+                        && !def.id.starts_with('_')
+                        && !def.id.ends_with('_')
+                        && !def.id.contains("__"),
+                    "CardDef.id must be valid snake_case for {:?}, got '{}'",
+                    card,
+                    def.id
+                );
+                assert_eq!(card.to_string(), def.id, "Display ID mismatch for {:?}", card);
+                assert_eq!(
+                    serde_json::to_string(&card).unwrap(),
+                    format!("\"{}\"", def.id),
+                    "Serde ID mismatch for {:?}",
+                    card
+                );
+                assert!(seen_ids.insert(def.id), "Duplicate id in registry: {}", def.id);
+                assert_eq!(SpecialCard::from_str(def.id), Some(card), "from_str (snake_case) failed for {}", def.id);
+            }
+
+            assert_eq!(SpecialCard::from_str("ReplaceCardSelf"), None);
+            assert_eq!(SpecialCard::from_str("replaceCardSelf"), None);
+            assert_eq!(serde_json::to_string(&ModifierEffect::RaisesBlocked).unwrap(), "\"raises_blocked\"");
+            assert_eq!(serde_json::to_string(&DrawRule::HigherThanLast).unwrap(), "\"higher_than_last\"");
+            assert_eq!(serde_json::to_string(&crate::poker::HandType::ThreeOfAKind).unwrap(), "\"three_of_a_kind\"");
+
+            assert!(SpecialCard::Special.def().pools.is_empty());
+            assert!(SpecialCard::Discard.def().pools.is_empty());
+            assert!(SpecialCard::SpecialSpread.def().pools.is_empty());
+            assert!(SpecialCard::Draw.def().pools.is_empty());
+            assert_eq!(
+                SpecialCard::Draw.def().roles,
+                vec![CardRole::Chaos, CardRole::Hand, CardRole::Board]
+            );
+
+            for draw_card in [
+                SpecialCard::DrawHeart,
+                SpecialCard::DrawSpade,
+                SpecialCard::DrawDiamond,
+                SpecialCard::DrawClub,
+                SpecialCard::DrawFace,
+                SpecialCard::DrawHigh,
+                SpecialCard::DrawLow,
+                SpecialCard::DrawHigherThanLast,
+                SpecialCard::DrawLowerThanLast,
+                SpecialCard::DrawSameSuitAsLast,
+            ] {
+                assert!(draw_card.has_role(CardRole::Board), "{:?} should have Board role", draw_card);
+                assert!(draw_card.has_role(CardRole::Hand), "{:?} should have Hand role", draw_card);
+                assert!(draw_card.in_pool(CardPool::Standard));
+                assert!(draw_card.in_pool(CardPool::WinnerDraft));
+                assert!(!draw_card.in_pool(CardPool::SpecialBurst));
+            }
+        }
+
+        #[test]
+        fn test_draw_rule_applies_to_any_player_hole_draw_and_stacks() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            game.players[p0_idx].special_cards.push(SpecialCard::DrawHeart);
+            game.players[p1_idx].special_cards.push(SpecialCard::DrawHeart);
+            game.players[p1_idx].special_cards.push(SpecialCard::ReplaceCardSelf);
+            game.players[p0_idx].special_cards.push(SpecialCard::ReplaceCardSelf);
+
+            // Push non-hearts on top of the deck so unconstrained pops would draw Spades/Clubs
+            game.deck.push(ExpandedCard::get_card("3", "c"));
+            game.deck.push(ExpandedCard::get_card("2", "s"));
+
+            // p0 plays DrawHeart, ends turn; p1 also plays DrawHeart -> merges into count: 2
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::DrawHeart,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            game.player_move(p0_id, Call).unwrap();
+
+            game.player_move(
+                p1_id,
+                PlaySpecial {
+                    card: SpecialCard::DrawHeart,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(game.special.active_modifiers().len(), 1);
+
+            // p1 replaces their own card -> skips non-Heart top card and consumes 1 draw charge
+            game.player_move(
+                p1_id,
+                PlaySpecial {
+                    card: SpecialCard::ReplaceCardSelf,
+                    target_id: Some(p1_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert_eq!(game.players[p1_idx].cards[0].card().suit, Suit::Hearts);
+            assert_eq!(
+                game.special.active_modifiers().len(),
+                1,
+                "Second ForceDraw charge should remain active after first draw"
+            );
+
+            // p1 raises so action returns to p0 in Preflop without dealing Flop community cards
+            let _ = game.player_move(p1_id, crate::Action::Raise { amount: 20 }).unwrap();
+            assert_eq!(game.get_current_turn_player_id(), p0_id);
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::ReplaceCardSelf,
+                    target_id: Some(p0_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert_eq!(game.players[p0_idx].cards[0].card().suit, Suit::Hearts);
+            assert!(
+                game.special.active_modifiers().is_empty(),
+                "Merged ForceDraw modifier should expire after second draw"
+            );
+        }
+
+        #[test]
+        fn test_draw_rule_last_card_rules_work_on_preflop_hole_draws() {
+            let mut game = started_game();
+            assert!(game.community.is_empty());
+
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            // Set deterministic hole cards: index 0 = 5 of Diamonds, last = 9 of Clubs
+            game.players[p0_idx].cards = vec![
+                ExpandedCard::get_card("5", "d"),
+                ExpandedCard::get_card("9", "c"),
+            ];
+            game.players[p0_idx].card_visibility = vec![vec![], vec![]];
+            game.players[p0_idx].special_cards.push(SpecialCard::DrawSameSuitAsLast);
+            game.players[p0_idx].special_cards.push(SpecialCard::DrawCardSelf);
+            game.players[p0_idx].special_cards.push(SpecialCard::DrawHigherThanLast);
+            game.players[p0_idx].special_cards.push(SpecialCard::ReplaceCardSelf);
+
+            // Top of deck is 2 of Hearts (neither Clubs nor >= Queen)
+            game.deck.push(ExpandedCard::get_card("q", "s"));
+            game.deck.push(ExpandedCard::get_card("2", "h"));
+
+            // Preflop DrawSameSuitAsLast + DrawCardSelf uses player's last hole card (Clubs)
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::DrawSameSuitAsLast,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::DrawCardSelf,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(game.players[p0_idx].cards.last().unwrap().card().suit, Suit::Clubs);
+
+            // Set index 0 to King of Spades; DrawHigherThanLast + ReplaceCardSelf(0) must draw >= King
+            game.players[p0_idx].cards[0] = ExpandedCard::get_card("k", "s");
+            game.deck.push(ExpandedCard::get_card("4", "d"));
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::DrawHigherThanLast,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::ReplaceCardSelf,
+                    target_id: Some(p0_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert!(game.players[p0_idx].cards[0].card().rank >= Rank::King);
+        }
+
+        #[test]
+        fn test_discard_blocks_community_draws_but_not_hole_draws() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            game.players[p0_idx].special_cards.push(SpecialCard::Discard);
+            game.players[p0_idx].special_cards.push(SpecialCard::ReplaceCardSelf);
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::Discard,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+
+            // ReplaceCardSelf must still draw a real card even while Discard is active
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::ReplaceCardSelf,
+                    target_id: Some(p0_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert_ne!(game.players[p0_idx].cards[0], ExpandedCard::Unmarked);
+
+            // Community deal must still be blocked by Discard
+            let mut events = Vec::new();
+            game.deal_community_cards(1, &mut events);
+            assert_eq!(game.community.last(), Some(&ExpandedCard::Unmarked));
+        }
+
+        #[test]
+        fn test_pot_mult_stacks_by_effect_not_duration() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            game.players[p0_idx].special_cards.push(SpecialCard::PotMult);
+            game.players[p0_idx].special_cards.push(SpecialCard::PotMult);
+
+            for _ in 0..2 {
+                game.player_move(
+                    p0_id,
+                    PlaySpecial {
+                        card: SpecialCard::PotMult,
+                        target_id: None,
+                        card_index: None,
+                    },
+                )
+                .unwrap();
+            }
+
+            assert_eq!(game.special.active_modifiers().len(), 1);
+            assert!((game.special.pot_multiplier() - 1.96).abs() < 1e-6);
+
+            let mut events = Vec::new();
+            game.end_hand(&mut events);
+            assert!(game.special.active_modifiers().is_empty());
+            assert!((game.special.pot_multiplier() - 1.0).abs() < 1e-6);
+        }
+
+        #[test]
+        fn test_hand_swap_swaps_card_visibility_and_remaps_reveals() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            // Give p0 a 3-card royal/trips hand (with a public 3rd card) that beats p1's 2-card hand
+            let p0_cards = vec![
+                ExpandedCard::get_card("a", "s"),
+                ExpandedCard::get_card("a", "h"),
+                ExpandedCard::get_card("a", "d"),
+            ];
+            let p1_cards = vec![
+                ExpandedCard::get_card("2", "c"),
+                ExpandedCard::get_card("7", "d"),
+            ];
+            game.players[p0_idx].cards = p0_cards.clone();
+            game.players[p0_idx].card_visibility = vec![vec![], vec![], vec![p0_id, p1_id]];
+            game.players[p1_idx].cards = p1_cards.clone();
+            game.players[p1_idx].card_visibility = vec![vec![], vec![]];
+
+            // p0 reveals p1's slot 0 first, then plays HandSwap targeting p1
+            game.players[p0_idx].special_cards.push(SpecialCard::RevealOpponentCard);
+            game.players[p0_idx].special_cards.push(SpecialCard::HandSwap);
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::HandSwap,
+                    target_id: Some(p1_id),
+                    card_index: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(game.players[p0_idx].cards, p1_cards);
+            assert_eq!(game.players[p1_idx].cards, p0_cards);
+            assert_eq!(game.players[p0_idx].card_visibility.len(), 2);
+            assert_eq!(game.players[p1_idx].card_visibility.len(), 3);
+            assert!(game.players[p1_idx].card_visibility[2].contains(&p0_id));
+            assert!(!game.players[p0_idx].card_visibility[0].contains(&p0_id));
+            assert!(
+                !game
+                    .special
+                    .active_modifiers()
+                    .iter()
+                    .any(|m| matches!(m.effect, ModifierEffect::RevealCard { target_id, viewer_id, .. } if target_id == viewer_id)),
+                "Self-reveal modifier should be pruned after HandSwap"
+            );
+
+            // Subsequent reveal on p1's new 3rd slot (already public to p0) fails cleanly;
+            // revealing unrevealed slot 1 succeeds without panic
+            game.players[p0_idx].special_cards.push(SpecialCard::RevealOpponentCard);
+            let res_already_visible = game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(2),
+                },
+            );
+            assert_eq!(res_already_visible.unwrap_err(), GameError::CardAlreadyVisible);
+            let res_hidden_slot = game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(1),
+                },
+            );
+            assert!(res_hidden_slot.is_ok());
+        }
+
+        #[test]
+        fn test_withdraw_bet_refunds_exact_multi_street_bets_and_clears_pot_players() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            let initial_total_chips: i32 = game.players.iter().map(|p| p.chips + p.total_bet).sum();
+
+            // Preflop: p0 raises 100 (total bet 120), p1 calls 100 (total bet 120) -> moves to Flop
+            game.player_move(p0_id, crate::Action::Raise { amount: 100 }).unwrap();
+            game.player_move(p1_id, Call).unwrap();
+
+            // Flop: first actor raises 50, other calls -> moves to Turn
+            let flop_first = game.get_current_turn_player_id();
+            let flop_second = if flop_first == p0_id { p1_id } else { p0_id };
+            game.player_move(flop_first, crate::Action::Raise { amount: 50 }).unwrap();
+            game.player_move(flop_second, Call).unwrap();
+
+            // Turn: current actor bets 30, next actor plays WithdrawBet (after investing 170 total)
+            let turn_first = game.get_current_turn_player_id();
+            let turn_second = if turn_first == p0_id { p1_id } else { p0_id };
+            game.player_move(turn_first, crate::Action::Raise { amount: 30 }).unwrap();
+
+            let withdrawer_idx = game.get_player_index(turn_second).unwrap();
+            let chips_before = game.players[withdrawer_idx].chips;
+            let tracked_before = game.special.hand_bets.get(&turn_second).copied().unwrap_or(0);
+            assert_eq!(tracked_before, 170);
+
+            game.players[withdrawer_idx].special_cards.push(SpecialCard::WithdrawBet);
+            game.player_move(
+                turn_second,
+                PlaySpecial {
+                    card: SpecialCard::WithdrawBet,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(game.players[withdrawer_idx].chips, chips_before + 170);
+            assert!(game.players[withdrawer_idx].folded);
+            assert!(game.players[withdrawer_idx].acted);
+            assert!(game.players[withdrawer_idx].turn_ended);
+            assert!(
+                game.pots.iter().all(|pot| !pot.players.contains(&turn_second)),
+                "Withdrawn player must have zero entries remaining in any pot"
+            );
+
+            // Advance/complete hand check: total chips across players + pots + round_pool remain conserved
+            let remaining_pool = game.pots.iter().map(|p| p.amount).sum::<i32>() + game.round_pool;
+            let current_player_chips: i32 = game.players.iter().map(|p| p.chips).sum();
+            assert_eq!(current_player_chips + remaining_pool, initial_total_chips);
+        }
+
+        #[test]
+        fn test_replace_card_self_clears_existing_reveal() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            game.players[p0_idx].special_cards.push(SpecialCard::RevealOpponentCard);
+            game.players[p1_idx].special_cards.push(SpecialCard::ReplaceCardSelf);
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert!(game.players[p1_idx].card_visibility[0].contains(&p0_id));
+
+            game.player_move(p0_id, Call).unwrap();
+            game.player_move(
+                p1_id,
+                PlaySpecial {
+                    card: SpecialCard::ReplaceCardSelf,
+                    target_id: Some(p1_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+
+            assert!(game.players[p1_idx].card_visibility[0].is_empty());
+            assert!(game.special.active_modifiers().is_empty());
+        }
+
+        #[test]
+        fn test_give_special_card_zero_count_emits_no_event() {
+            let mut game = started_game();
+            let p0_id = game.players[0].id;
+            let mut events = Vec::new();
+
+            let res = give_special_card(SpecialCard::ChipBoost, 0, true, p0_id, &mut game, &mut events);
+            assert!(res.is_ok());
+            assert!(events.is_empty());
+        }
+
+        #[test]
+        fn test_reveal_opponent_card_rejects_already_visible_card() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            game.players[p0_idx].special_cards.push(SpecialCard::RevealOpponentCard);
+            game.players[p0_idx].special_cards.push(SpecialCard::RevealOpponentCard);
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert_eq!(game.players[p1_idx].card_visibility[0], vec![p0_id]);
+
+            let dup = game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(0),
+                },
+            );
+            assert_eq!(dup.unwrap_err(), GameError::CardAlreadyVisible);
+            assert_eq!(game.players[p0_idx].special_cards, vec![SpecialCard::RevealOpponentCard]);
+
+            // Different target slot on the same opponent stacks separately
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(1),
+                },
+            )
+            .unwrap();
+            assert_eq!(game.special.active_modifiers().len(), 2);
+            assert_eq!(game.players[p1_idx].card_visibility[1], vec![p0_id]);
+        }
+
+        #[test]
+        fn test_rank_boost_increments_and_wraps_ace_to_two() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            game.players[p0_idx].cards = vec![
+                ExpandedCard::get_card("a", "s"),
+                ExpandedCard::get_card("9", "h"),
+                ExpandedCard::Unmarked,
+                ExpandedCard::PlayingCard(Card {
+                    rank: Rank::None,
+                    suit: Suit::Suitless,
+                }),
+                ExpandedCard::get_joker(),
+            ];
+            game.players[p0_idx].card_visibility = vec![vec![], vec![], vec![], vec![], vec![]];
+            for _ in 0..5 {
+                game.players[p0_idx].special_cards.push(SpecialCard::RankBoost);
+            }
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RankBoost,
+                    target_id: Some(p0_id),
+                    card_index: Some(1),
+                },
+            )
+            .unwrap();
+            assert_eq!(game.players[p0_idx].cards[1].card().rank, Rank::Ten);
+            assert_eq!(game.players[p0_idx].cards[1].card().suit, Suit::Hearts);
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RankBoost,
+                    target_id: Some(p0_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert_eq!(game.players[p0_idx].cards[0].card().rank, Rank::Two);
+            assert_eq!(game.players[p0_idx].cards[0].card().suit, Suit::Spades);
+
+            // Unmarked rankless card converts to a suitless Ace
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RankBoost,
+                    target_id: Some(p0_id),
+                    card_index: Some(2),
+                },
+            )
+            .unwrap();
+            assert!(matches!(game.players[p0_idx].cards[2], ExpandedCard::PlayingCard(_)));
+            assert_eq!(game.players[p0_idx].cards[2].card().rank, Rank::Ace);
+            assert_eq!(game.players[p0_idx].cards[2].card().suit, Suit::Suitless);
+
+            // PlayingCard with Rank::None converts to an Ace while preserving suitless
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RankBoost,
+                    target_id: Some(p0_id),
+                    card_index: Some(3),
+                },
+            )
+            .unwrap();
+            assert!(matches!(game.players[p0_idx].cards[3], ExpandedCard::PlayingCard(_)));
+            assert_eq!(game.players[p0_idx].cards[3].card().rank, Rank::Ace);
+            assert_eq!(game.players[p0_idx].cards[3].card().suit, Suit::Suitless);
+
+            let err = game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RankBoost,
+                    target_id: Some(p0_id),
+                    card_index: Some(4),
+                },
+            );
+            assert_eq!(err.unwrap_err(), GameError::InvalidAction);
+            assert_eq!(game.players[p0_idx].special_cards, vec![SpecialCard::RankBoost]);
+        }
+
+        #[test]
+        fn test_suit_match_matches_other_hole_card_suit() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            game.players[p0_idx].cards = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_card("k", "h"),
+                ExpandedCard::get_card("a", "h"),
+            ];
+            game.players[p0_idx].card_visibility = vec![vec![], vec![], vec![]];
+            game.players[p0_idx].special_cards.push(SpecialCard::SuitMatch);
+
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::SuitMatch,
+                    target_id: Some(p0_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert_eq!(game.players[p0_idx].cards[0].card().rank, Rank::Two);
+            assert_eq!(game.players[p0_idx].cards[0].card().suit, Suit::Hearts);
+
+            // Rejects when no other suited PlayingCard exists in hand
+            game.players[p0_idx].cards = vec![
+                ExpandedCard::get_card("2", "s"),
+                ExpandedCard::get_joker(),
+            ];
+            game.players[p0_idx].special_cards.push(SpecialCard::SuitMatch);
+            let err = game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::SuitMatch,
+                    target_id: Some(p0_id),
+                    card_index: Some(0),
+                },
+            );
+            assert_eq!(err.unwrap_err(), GameError::InvalidAction);
+            assert_eq!(game.players[p0_idx].special_cards, vec![SpecialCard::SuitMatch]);
+        }
+
+        #[test]
+        fn test_redraw_hand_replaces_all_cards_clears_reveals_and_uses_draw_rules() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            game.players[p1_idx].cards = vec![
+                ExpandedCard::get_card("2", "c"),
+                ExpandedCard::get_card("3", "d"),
+            ];
+            game.players[p1_idx].card_visibility = vec![vec![], vec![]];
+            let initial_p1_cards = game.players[p1_idx].cards.clone();
+
+            game.players[p0_idx].special_cards.push(SpecialCard::RevealOpponentCard);
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::RevealOpponentCard,
+                    target_id: Some(p1_id),
+                    card_index: Some(0),
+                },
+            )
+            .unwrap();
+            assert!(game.players[p1_idx].card_visibility[0].contains(&p0_id));
+
+            game.player_move(p0_id, Call).unwrap();
+
+            // Place non-Hearts on top of deck so DrawHeart must skip them on index 0
+            game.deck.push(ExpandedCard::get_card("4", "c"));
+            game.deck.push(ExpandedCard::get_card("5", "s"));
+            game.players[p1_idx].special_cards.push(SpecialCard::DrawHeart);
+            game.players[p1_idx].special_cards.push(SpecialCard::RedrawHand);
+
+            game.player_move(
+                p1_id,
+                PlaySpecial {
+                    card: SpecialCard::DrawHeart,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            game.player_move(
+                p1_id,
+                PlaySpecial {
+                    card: SpecialCard::RedrawHand,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(game.players[p1_idx].cards.len(), 2);
+            assert_eq!(game.players[p1_idx].cards[0].card().suit, Suit::Hearts);
+            assert_ne!(game.players[p1_idx].cards, initial_p1_cards);
+            assert!(game.players[p1_idx].card_visibility.iter().all(|v| v.is_empty()));
+            assert!(game.special.active_modifiers().is_empty());
+        }
+
+        #[test]
+        fn test_loss_insurance_stacks_multiplicatively_and_pays_on_fold_and_showdown() {
+            // 1. Fold refund with multiplicative stacking: 40% + 40% -> 64%
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            game.players[p0_idx].special_cards.push(SpecialCard::LossInsurance);
+            game.players[p0_idx].special_cards.push(SpecialCard::LossInsurance);
+            for _ in 0..2 {
+                game.player_move(
+                    p0_id,
+                    PlaySpecial {
+                        card: SpecialCard::LossInsurance,
+                        target_id: None,
+                        card_index: None,
+                    },
+                )
+                .unwrap();
+            }
+            assert_eq!(game.special.active_modifiers().len(), 1);
+            match game.special.active_modifiers()[0].effect {
+                ModifierEffect::LossInsurance { rebate_rate, .. } => {
+                    assert!((rebate_rate - 0.64).abs() < 1e-6);
+                }
+                other => panic!("Expected LossInsurance modifier, got {:?}", other),
+            }
+
+            game.player_move(p0_id, Raise { amount: 100 }).unwrap();
+            game.player_move(p1_id, Raise { amount: 50 }).unwrap();
+
+            let risked = game.players[p0_idx].total_bet;
+            let chips_before_fold = game.players[p0_idx].chips;
+            game.player_move(p0_id, Fold).unwrap();
+            let expected_fold_refund = ((risked as f64) * 0.64).round() as i32;
+            assert_eq!(game.players[p0_idx].chips, chips_before_fold + expected_fold_refund);
+
+            // 2. Showdown loss refund (40%)
+            let mut showdown_game = started_game();
+            let s0_id = showdown_game.get_current_turn_player_id();
+            let s0_idx = showdown_game.get_player_index(s0_id).unwrap();
+            let s1_idx = 1 - s0_idx;
+            let s1_id = showdown_game.players[s1_idx].id;
+
+            showdown_game.players[s0_idx].special_cards.push(SpecialCard::LossInsurance);
+            showdown_game.player_move(
+                s0_id,
+                PlaySpecial {
+                    card: SpecialCard::LossInsurance,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            showdown_game.player_move(s0_id, Raise { amount: 100 }).unwrap();
+            showdown_game.player_move(s1_id, Call).unwrap();
+
+            while matches!(showdown_game.round, Round::Flop | Round::Turn) {
+                let turn_id = showdown_game.get_current_turn_player_id();
+                showdown_game.player_move(turn_id, Call).unwrap();
+            }
+            assert_eq!(showdown_game.round, Round::River);
+
+            showdown_game.players[s0_idx].cards = vec![
+                ExpandedCard::get_card("2", "c"),
+                ExpandedCard::get_card("7", "d"),
+            ];
+            showdown_game.players[s1_idx].cards = vec![
+                ExpandedCard::get_card("a", "s"),
+                ExpandedCard::get_card("a", "h"),
+            ];
+            showdown_game.community = vec![
+                ExpandedCard::get_card("a", "d"),
+                ExpandedCard::get_card("a", "c"),
+                ExpandedCard::get_card("k", "s"),
+                ExpandedCard::get_card("q", "h"),
+                ExpandedCard::get_card("9", "s"),
+            ];
+
+            let s0_risked = showdown_game.special.hand_bets[&s0_id];
+            let s0_chips_before = showdown_game.players[s0_idx].chips;
+            while showdown_game.round == Round::River {
+                let turn_id = showdown_game.get_current_turn_player_id();
+                showdown_game.player_move(turn_id, Call).unwrap();
+            }
+            if showdown_game.round == Round::WinnerDraft {
+                let _ = showdown_game.timeout_winner_draft();
+            }
+            assert_eq!(showdown_game.round, Round::Showdown);
+            assert_eq!(
+                showdown_game.players[s0_idx].chips,
+                s0_chips_before + ((s0_risked as f64) * 0.40).round() as i32
+            );
+
+            // 3. WithdrawBet must not double-dip with LossInsurance
+            let mut wb_game = started_game();
+            let w0_id = wb_game.get_current_turn_player_id();
+            let w0_idx = wb_game.get_player_index(w0_id).unwrap();
+            let w1_idx = 1 - w0_idx;
+            let w1_id = wb_game.players[w1_idx].id;
+
+            wb_game.players[w0_idx].special_cards.push(SpecialCard::LossInsurance);
+            wb_game.players[w0_idx].special_cards.push(SpecialCard::WithdrawBet);
+            wb_game.player_move(
+                w0_id,
+                PlaySpecial {
+                    card: SpecialCard::LossInsurance,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            wb_game.player_move(w0_id, Raise { amount: 100 }).unwrap();
+            wb_game.player_move(w1_id, Raise { amount: 50 }).unwrap();
+
+            let risked_before_wb = wb_game.special.hand_bets[&w0_id];
+            let chips_before_wb = wb_game.players[w0_idx].chips;
+            wb_game.player_move(
+                w0_id,
+                PlaySpecial {
+                    card: SpecialCard::WithdrawBet,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(wb_game.players[w0_idx].chips, chips_before_wb + risked_before_wb);
+        }
+
+        #[test]
+        fn test_bet_rebate_tracks_blinds_and_bets_separately_and_pays_after_three_hands() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+            let p1_idx = 1 - p0_idx;
+            let p1_id = game.players[p1_idx].id;
+
+            // Hand 1: activate first BetRebate, raise 100, then p1 folds
+            let h1_before = game.special.hand_bets.get(&p0_id).copied().unwrap_or(0);
+            game.players[p0_idx].special_cards.push(SpecialCard::BetRebate);
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::BetRebate,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            game.player_move(p0_id, Raise { amount: 100 }).unwrap();
+            let h1_tracked = game.special.hand_bets[&p0_id] - h1_before;
+            game.player_move(p1_id, Fold).unwrap();
+            let mut events = Vec::new();
+            game.end_hand(&mut events);
+
+            // Hand 2: new hand blind is tracked in BetRebate #1; activate independent BetRebate #2
+            game.start_new_hand(&mut events);
+            let h2_blind = game.special.hand_bets.get(&p0_id).copied().unwrap_or(0);
+            assert!(h2_blind > 0);
+
+            if game.get_current_turn_player_id() != p0_id {
+                game.player_move(p1_id, Call).unwrap();
+            }
+            game.players[p0_idx].special_cards.push(SpecialCard::BetRebate);
+            game.player_move(
+                p0_id,
+                PlaySpecial {
+                    card: SpecialCard::BetRebate,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                game.special.active_modifiers().len(),
+                2,
+                "BetRebate uses StackMode::Separate so both trackers run independently"
+            );
+
+            let h2_before_raise = game.special.hand_bets[&p0_id];
+            game.player_move(p0_id, Raise { amount: 50 }).unwrap();
+            let h2_raise = game.special.hand_bets[&p0_id] - h2_before_raise;
+            game.player_move(p1_id, Fold).unwrap();
+            game.end_hand(&mut events);
+
+            // Hand 3: ending hand 3 expires BetRebate #1 (20% of Hand 1 raise + Hand 2 blind & raise + Hand 3 blind)
+            game.start_new_hand(&mut events);
+            let h3_blind = game.special.hand_bets.get(&p0_id).copied().unwrap_or(0);
+            let chips_before_h3_end = game.players[p0_idx].chips;
+            game.end_hand(&mut events);
+
+            let expected_r1 = (((h1_tracked + h2_blind + h2_raise + h3_blind) as f64) * 0.20).round() as i32;
+            assert_eq!(game.players[p0_idx].chips, chips_before_h3_end + expected_r1);
+            assert_eq!(game.special.active_modifiers().len(), 1);
+
+            // Hand 4: ending hand 4 expires BetRebate #2 (20% of Hand 2 raise + Hand 3 blind + Hand 4 blind)
+            game.start_new_hand(&mut events);
+            let h4_blind = game.special.hand_bets.get(&p0_id).copied().unwrap_or(0);
+            let chips_before_h4_end = game.players[p0_idx].chips;
+            game.end_hand(&mut events);
+
+            let expected_r2 = (((h2_raise + h3_blind + h4_blind) as f64) * 0.20).round() as i32;
+            assert_eq!(game.players[p0_idx].chips, chips_before_h4_end + expected_r2);
+            assert!(game.special.active_modifiers().is_empty());
+        }
+
+        #[test]
+        fn test_chip_stipend_scales_with_ante_and_stacks_by_duration() {
+            let mut game = started_game();
+            let p0_id = game.get_current_turn_player_id();
+            let p0_idx = game.get_player_index(p0_id).unwrap();
+
+            game.players[p0_idx].special_cards.push(SpecialCard::ChipStipend);
+            game.players[p0_idx].special_cards.push(SpecialCard::ChipStipend);
+
+            for _ in 0..2 {
+                game.player_move(
+                    p0_id,
+                    PlaySpecial {
+                        card: SpecialCard::ChipStipend,
+                        target_id: None,
+                        card_index: None,
+                    },
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                game.special.active_modifiers().len(),
+                1,
+                "ChipStipend should merge duration cleanly into a single modifier"
+            );
+
+            let start_chips = game.players[p0_idx].chips;
+            let mut events = Vec::new();
+            game.end_hand(&mut events);
+            assert_eq!(game.players[p0_idx].chips, start_chips + 20);
+
+            game.start_new_hand(&mut events);
+            let turn_id = game.get_current_turn_player_id();
+            let turn_idx = game.get_player_index(turn_id).unwrap();
+            game.players[turn_idx].special_cards.push(SpecialCard::AnteUp);
+            game.player_move(
+                turn_id,
+                PlaySpecial {
+                    card: SpecialCard::AnteUp,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+
+            for hand in 2..=8 {
+                let before = game.players[p0_idx].chips;
+                game.end_hand(&mut events);
+                assert_eq!(
+                    game.players[p0_idx].chips,
+                    before + 40,
+                    "Hand {hand} should pay 1x ante-scaled blind (40)"
+                );
+            }
+
+            // Stipend expired after hand 8; hand 9 pays nothing
+            let before_h9 = game.players[p0_idx].chips;
+            game.end_hand(&mut events);
+            assert_eq!(game.players[p0_idx].chips, before_h9);
+        }
+
+        #[test]
+        fn test_draw_secret_card_deals_revealed_hole_cards_and_community_card() {
+            let mut game = Game::new();
+            let config = GameConfig {
+                players: vec![
+                    ConfigPlayer::Human { id: 0 },
+                    ConfigPlayer::Human { id: 1 },
+                    ConfigPlayer::Human { id: 2 },
+                ],
+                rng_seed: 0,
+                blind_size: 20,
+                min_raise: 10,
+                starting_chips: 1000,
+                special_card_limit: 3,
+                deck_type: DeckType::Standard,
+                max_players: 3,
+                round_limit: 30,
+                max_bet_multiplier: None,
+            };
+            game.update_config(config).unwrap();
+            game.initialise().unwrap();
+            game.start().unwrap();
+
+            let caster_id = game.get_current_turn_player_id();
+            let caster_idx = game.get_player_index(caster_id).unwrap();
+            let active_opp_idx = (caster_idx + 1) % 3;
+            let folded_opp_idx = (caster_idx + 2) % 3;
+            game.players[folded_opp_idx].folded = true;
+
+            game.players[caster_idx].special_cards.push(SpecialCard::Draw);
+            assert!(game.community.is_empty());
+
+            game.player_move(
+                caster_id,
+                PlaySpecial {
+                    card: SpecialCard::Draw,
+                    target_id: None,
+                    card_index: None,
+                },
+            )
+            .unwrap();
+
+            assert_eq!(game.players[caster_idx].cards.len(), 4);
+            assert_eq!(game.players[caster_idx].card_visibility[2], vec![0, 1, 2]);
+            assert_eq!(game.players[caster_idx].card_visibility[3], vec![0, 1, 2]);
+            assert_eq!(game.players[active_opp_idx].cards.len(), 3);
+            assert_eq!(game.players[active_opp_idx].card_visibility[2], vec![0, 1, 2]);
+            assert_eq!(game.players[folded_opp_idx].cards.len(), 2);
+            assert_eq!(game.community.len(), 1);
+        }
+    }
 
     #[cfg(test)]
     mod game_tests {
@@ -327,7 +1377,7 @@ mod tests {
                 ExpandedCard::get_card("4", "d"), 
                 ExpandedCard::get_card("5", "d")
             ];
-            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.special.invalidated_hands(), game.ctx.hand_size);
 
             assert_eq!(hand.hand_type, HandType::StraightFlush);
         }
@@ -344,7 +1394,7 @@ mod tests {
                 ExpandedCard::get_card("j", "d"), 
                 ExpandedCard::get_card("10", "d")
             ];
-            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.special.invalidated_hands(), game.ctx.hand_size);
 
             assert_eq!(hand.hand_type, HandType::RoyalFlush);
         }    
@@ -360,7 +1410,7 @@ mod tests {
                 ExpandedCard::get_card("a", "c"), 
                 ExpandedCard::get_card("a", "h")
                 ];
-            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.special.invalidated_hands(), game.ctx.hand_size);
 
             assert_eq!(hand.hand_type, HandType::FourOfAKind);
         }
@@ -377,7 +1427,7 @@ mod tests {
                 ExpandedCard::get_card("7", "d"), 
                 ExpandedCard::get_card("9", "d")
             ];
-            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+            let hand = Hand::new(&cards, &game.ctx.hand_fns, &game.special.invalidated_hands(), game.ctx.hand_size);
 
             assert_eq!(hand.hand_type, HandType::Flush);
         }
@@ -986,7 +2036,7 @@ mod tests {
         fn test_ante_up_stacks_multiplicatively_and_persists_across_hands() {
             let mut game = get_configured_started_game(2, 0);
             game.ctx.max_bet_multiplier = Some(25);
-            assert_eq!(game.modifiers.vars.ante_multiplier, 1.0);
+            assert_eq!(game.special.ante_multiplier(), 1.0);
             assert_eq!(game.get_current_max_bet(), Some(500));
 
             let p0_id = game.get_current_turn_player_id();
@@ -1006,13 +2056,13 @@ mod tests {
                     },
                 );
                 assert!(res.is_ok());
-                assert_eq!(game.modifiers.vars.ante_multiplier, expected_mult);
+                assert_eq!(game.special.ante_multiplier(), expected_mult);
             }
 
             assert_eq!(game.get_current_max_bet(), Some(4000));
             assert_eq!(
-                game.modifiers
-                    .active
+                game.special
+                    .active_modifiers()
                     .iter()
                     .filter(|m| matches!(m.effect, ModifierEffect::AnteMultiplier { .. }))
                     .count(),
@@ -1021,10 +2071,10 @@ mod tests {
 
             // End current hand and start a new hand: stacked ante multiplier should persist and scale blinds
             let mut events = Vec::new();
-            game.end_hand();
+            game.end_hand(&mut events);
             game.start_new_hand(&mut events);
 
-            assert_eq!(game.modifiers.vars.ante_multiplier, 8.0);
+            assert_eq!(game.special.ante_multiplier(), 8.0);
             // Blind size is 20 * 8.0 = 160 (SB = 80, BB = 160)
             assert_eq!(game.bet, 160);
             assert_eq!(game.round_pool, 240);
@@ -1124,6 +2174,7 @@ mod tests {
                 SpecialCard::ChipBoost,
                 SpecialCard::ChipGamble,
                 SpecialCard::WithdrawBet,
+                SpecialCard::LossInsurance,
                 SpecialCard::Joker,
                 SpecialCard::HandSwap,
                 SpecialCard::AnteUp,
@@ -1395,32 +2446,32 @@ mod tests {
         #[test]
         fn test_ante_up_pity_increments_across_rounds_and_resets_on_draw() {
             let mut game = get_configured_started_game(2, 0);
-            assert_eq!(game.rounds_since_ante_up, 0);
-            assert!(!game.ante_up_drawn_this_hand);
+            assert_eq!(game.special.rounds_since_ante_up, 0);
+            assert!(!game.special.ante_up_drawn_this_hand);
 
+            let mut events = Vec::new();
             // Simulate consecutive hands with no AnteUp drawn
             for expected_round in 1..=ANTE_UP_PITY_MAX_ROUNDS {
-                game.end_hand();
-                assert_eq!(game.rounds_since_ante_up, expected_round);
-                assert!(!game.ante_up_drawn_this_hand);
-                let mut events = Vec::new();
+                game.end_hand(&mut events);
+                assert_eq!(game.special.rounds_since_ante_up, expected_round);
+                assert!(!game.special.ante_up_drawn_this_hand);
                 game.start_new_hand(&mut events);
             }
 
             // At max pity rounds, next draw is guaranteed to be AnteUp and immediately resets pity
             let drawn = SpecialCard::draw_special_cards(2, game.players[0].id, &mut game);
             assert_eq!(drawn[0], SpecialCard::AnteUp);
-            assert_eq!(game.rounds_since_ante_up, 0);
-            assert!(game.ante_up_drawn_this_hand);
+            assert_eq!(game.special.rounds_since_ante_up, 0);
+            assert!(game.special.ante_up_drawn_this_hand);
 
             // Ending the hand where AnteUp was drawn keeps rounds_since_ante_up at 0
-            game.end_hand();
-            assert_eq!(game.rounds_since_ante_up, 0);
-            assert!(!game.ante_up_drawn_this_hand);
+            game.end_hand(&mut events);
+            assert_eq!(game.special.rounds_since_ante_up, 0);
+            assert!(!game.special.ante_up_drawn_this_hand);
 
             // Ending the subsequent hand with no AnteUp steps pity to 1
-            game.end_hand();
-            assert_eq!(game.rounds_since_ante_up, 1);
+            game.end_hand(&mut events);
+            assert_eq!(game.special.rounds_since_ante_up, 1);
         }
 
         #[test]
@@ -1431,8 +2482,8 @@ mod tests {
 
             let mut hits_round_0 = 0usize;
             for _ in 0..trials {
-                game.rounds_since_ante_up = 0;
-                game.ante_up_drawn_this_hand = false;
+                game.special.rounds_since_ante_up = 0;
+                game.special.ante_up_drawn_this_hand = false;
                 if SpecialCard::draw_special_cards(1, player_id, &mut game)[0] == SpecialCard::AnteUp {
                     hits_round_0 += 1;
                 }
@@ -1440,8 +2491,8 @@ mod tests {
 
             let mut hits_round_5 = 0usize;
             for _ in 0..trials {
-                game.rounds_since_ante_up = 5;
-                game.ante_up_drawn_this_hand = false;
+                game.special.rounds_since_ante_up = 5;
+                game.special.ante_up_drawn_this_hand = false;
                 if SpecialCard::draw_special_cards(1, player_id, &mut game)[0] == SpecialCard::AnteUp {
                     hits_round_5 += 1;
                 }
