@@ -53,7 +53,7 @@ if (fs.existsSync(publicPath)) {
     });
 } else {
     app.get('/', (req, res) => {
-        res.status(200).send("Failed to serve frontend.");
+        res.status(200).send("Failed to serve frontend");
     });
 }
 
@@ -748,7 +748,7 @@ function sendPrivateSystemChat(socket: Socket, text: string, isError = false) {
 
 function handleConsoleCommand(socket: Socket, room: RoomData, session: SessionData, rawText: string) {
     if (!isLocalConsoleAllowed(socket)) {
-        sendPrivateSystemChat(socket, "Console commands are disabled on non-local servers.", true);
+        sendPrivateSystemChat(socket, "Console commands not supported in current environment", true);
         return;
     }
 
@@ -760,7 +760,7 @@ function handleConsoleCommand(socket: Socket, room: RoomData, session: SessionDa
     try {
         result = JSON.parse(room.game.debug_command(session.playerId, rawText)) as ConsoleCommandResult;
     } catch (e) {
-        sendPrivateSystemChat(socket, "Failed to execute console command.", true);
+        sendPrivateSystemChat(socket, "Failed to execute command", true);
         return;
     }
 
@@ -887,7 +887,7 @@ io.on("connection", (socket: Socket) => {
                     }, closeTime);
 
                 } catch (e) {
-                    io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to toggle player with bot")
+                    io.to(room.roomId).emit("error", "An unexpected error occurred while attempting to swap player with bot")
                     return;
                 }
                 // disconnect buffered to ensure minor connection drops do not cause disconnect

@@ -591,9 +591,7 @@
     bottom: calc(100% + 12px);
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(20, 20, 26, 0.75);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
+    background: rgb(20, 20, 26);
     border: 2px solid var(--input-focus-colour);
     padding: 8px 12px;
     font-size: 1.5rem;
@@ -1112,7 +1110,7 @@
     right: calc(100% + 12px);
     top: 50%;
     transform: translateY(-50%);
-    background: rgba(20, 20, 26, 0.8);
+    background: rgb(20, 20, 26);
     border: 2px solid var(--input-focus-colour);
     padding: 8px 12px;
     font-size: 1.5rem;
@@ -1295,9 +1293,7 @@
     bottom: calc(100% + 10px);
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(20, 20, 26, 0.92);
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
+    background: rgb(20, 20, 26);
     border: 2px solid var(--input-focus-colour);
     padding: 6px 10px;
     font-size: var(--fs-md);
