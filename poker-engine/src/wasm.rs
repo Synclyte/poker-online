@@ -138,4 +138,29 @@ impl GameAPI {
             Err(error) => api::error_json(&error),
         }
     }
+
+    pub fn debug_command(&mut self, caller_id: i32, command: String) -> String {
+        let round = self.game.round;
+        let result = (|| {
+            let caller_id = api::parse_player_id(caller_id).map_err(|error| api::ConsoleCommandError::Engine {
+                command: None,
+                round,
+                error,
+            })?;
+            let cmd = api::parse_console_command(caller_id, &command)?;
+            let (outcome, events) = self.game.execute_console_command(cmd).map_err(|error| {
+                api::ConsoleCommandError::Engine {
+                    command: Some(cmd),
+                    round: self.game.round,
+                    error,
+                }
+            })?;
+            Ok::<_, api::ConsoleCommandError>((outcome, events))
+        })();
+
+        match result {
+            Ok((outcome, events)) => api::console_ok_json(&outcome, events),
+            Err(error) => api::console_err_json(&error),
+        }
+    }
 }

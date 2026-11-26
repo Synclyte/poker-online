@@ -32,6 +32,7 @@ export type MoveAction =
         targetId: number;
         cardIndex: number;
     }
+    | { type: "gainChips"; amount: number; afterShowdown?: boolean }
     | { type: "swapBot" }
     | { type: "swapHuman" }
     | { type: "replaceCommunity"; index: number }
@@ -68,6 +69,7 @@ export interface PlayerState {
     isDealer: boolean;
     holeCards: (CardView | null)[];
     specialCards: (CardView | null)[];
+    specialCardLimit?: number;
     handType: string;
 }
 
@@ -115,6 +117,7 @@ export interface Particle {
     startTime: number;
     duration: number;
     type: number;
+    isCircle?: boolean;
 }
 
 export interface ChipImageInfo {
@@ -125,7 +128,7 @@ export interface ChipImageInfo {
 export interface SpecialCardInfo {
     label: string;
     description: string;
-    target: "none" | "selfCard" | "other" | "otherCard" | "communityCard";
+    target: "none" | "selfCard" | "selfOrCommunityCard" | "other" | "otherCard" | "communityCard";
     imgSrc?: string;
     requiresTargetIndex?: boolean;
 }

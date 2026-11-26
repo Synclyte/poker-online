@@ -8,7 +8,7 @@
     "build:engine": "cd ../poker-engine && wasm-pack build --target nodejs --out-dir ../poker-server/pkg",
     "build:client": "cd ../poker-client && npm install && npm run build && node -e \"import fs from 'fs'; fs.cpSync('../poker-client/dist', './public', { recursive: true });\"",
     "build": "npm run build:engine && npm run build:client && tsc",
-    "dev": "tsx watch server.ts",
+    "dev": "tsx watch --include ./pkg/poker_engine.js server.ts",
     "start": "node dist/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

@@ -115,7 +115,7 @@ impl AI {
                     let remaining_chips_for_raise = (player.chips - call_portion).max(0);
                     let max_raise = remaining_chips_for_raise.min(max_cap_raise);
 
-                    let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
+                    let effective_min = (game.ctx.min_raise as f64 * game.special.ante_multiplier()) as i32;
                     let min_r = effective_min.min(max_raise);
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.1 * self.greed * player.chips as f64) as i32;
                     let adjusted_raise = raise_amount.max(min_r).min(max_raise);
@@ -143,7 +143,7 @@ impl AI {
                     let remaining_chips_for_raise = (player.chips - call_portion).max(0);
                     let max_raise = remaining_chips_for_raise.min(max_cap_raise);
 
-                    let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
+                    let effective_min = (game.ctx.min_raise as f64 * game.special.ante_multiplier()) as i32;
                     let min_r = effective_min.min(max_raise);
                     let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
                     let adjusted_raise = raise_amount.max(min_r).min((self.budget - self.total_bet).max(0)).min(max_raise);
@@ -169,7 +169,7 @@ impl AI {
                 let remaining_chips_for_raise = (player.chips - call_portion).max(0);
                 let max_raise = remaining_chips_for_raise.min(max_cap_raise);
 
-                let effective_min = (game.ctx.min_raise as f64 * game.modifiers.vars.ante_multiplier) as i32;
+                let effective_min = (game.ctx.min_raise as f64 * game.special.ante_multiplier()) as i32;
                 let min_r = effective_min.min(max_raise);
                 let raise_amount = game.ctx.blind_size + ((0.5 + game.ctx.rng.random::<f64>()) * 0.15 * self.greed * player.chips as f64) as i32;
                 let adjusted_raise = raise_amount.max(min_r).min((self.budget - self.total_bet).max(0)).min(max_raise);
@@ -249,7 +249,8 @@ impl AI {
             normalised_adjusted_value
         }
 
-        let hand = Hand::new(&hand_cards, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+        let invalidated_hands = game.special.invalidated_hands();
+        let hand = Hand::new(&hand_cards, &game.ctx.hand_fns, &invalidated_hands, game.ctx.hand_size);
 
         if hand.hand_type == HandType::None {
             return 0.0;
@@ -261,7 +262,7 @@ impl AI {
         
         // additional adjustments
         // if this hand is the same as the hand on the board, penalise
-        let board_hand = Hand::new(&game.community, &game.ctx.hand_fns, &game.modifiers.invalidated_hands(), game.ctx.hand_size);
+        let board_hand = Hand::new(&game.community, &game.ctx.hand_fns, &invalidated_hands, game.ctx.hand_size);
         let is_board = hand == board_hand;
         let playing_board = hand.hand_type == board_hand.hand_type;
         if is_board {
@@ -275,7 +276,7 @@ impl AI {
             let potential_hand = Hand::new(
                 &[hand_cards.clone(), vec![ExpandedCard::get_joker()]].concat(), 
                 &game.ctx.hand_fns, 
-                &game.modifiers.invalidated_hands(), 
+                &invalidated_hands, 
                 game.ctx.hand_size
             );
             let potential_value = get_raw_value(&potential_hand);

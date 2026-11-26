@@ -66,7 +66,7 @@ export function Lobby() {
         blindSize: 20,
         minRaise: 10,
         startingChips: 1000,
-        specialCardLimit: 3,
+        specialCardLimit: 4,
         deckType: "standard",
         turnTimeout: 30,
         isPrivate: false,

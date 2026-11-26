@@ -197,9 +197,22 @@
     color: #ffd700;
 }
 
+.systemName {
+    color: #7dd3fc;
+}
+
 .msgText {
     color: var(--text-colour);
     font-family: 'Jersey 10', 'Pixeloid Sans', sans-serif;
+    white-space: pre-line;
+}
+
+.systemMsgText {
+    color: #bbf7d0;
+}
+
+.errorMsgText {
+    color: #fca5a5;
 }
 
 .inputBar {
