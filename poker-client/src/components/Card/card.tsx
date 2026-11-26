@@ -260,7 +260,7 @@ export const specialCardInfo: Record<string, SpecialCardInfo> = {
     },
     discard: {
         label: "Discard",
-        description: "Small chance to obtain when discarding a special card. Prevents any more community cards from being drawn for the rest of this hand",
+        description: "Small chance to obtain when discarding a special card. Prevents any more community cards from being drawn this hand",
         target: "none",
         imgSrc: "/src/assets/special/special_discard.png",
     },
@@ -311,7 +311,7 @@ export const specialCardInfo: Record<string, SpecialCardInfo> = {
     },
     bet_rebate: {
         label: "Bet Rebate",
-        description: "Refunds 20% of all chips spent by you in the next 3 hands after the effect expires",
+        description: "After 3 hands, refunds 20% of all chips you have spent after use of this card",
         target: "none",
         imgSrc: "/src/assets/special/special_bet_rebate.png",
     },
@@ -323,13 +323,13 @@ export const specialCardInfo: Record<string, SpecialCardInfo> = {
     },
     draw: {
         label: "Draw",
-        description: "Small chance to obtain when drawing a hole card. When used, deals 3 hole cards to you, 1 hole card to each opponent, and 1 community card. All drawn cards are revealed to everyone",
+        description: "Small chance to obtain when drawing a hole card. Provides a revealed card to all players and the board, and 3 to you",
         target: "none",
         imgSrc: "/src/assets/special/special_draw.png",
     },
     extra_slot: {
         label: "Extra Slot",
-        description: "Permanently increases your special card capacity by 1 for the rest of the game",
+        description: "Permanently increases your special card capacity by 1",
         target: "none",
         imgSrc: "/src/assets/special/special_extra_slot.png",
     },
@@ -371,7 +371,7 @@ export function getSpecialCardInfo(
         const successChance = Math.round(chance * 100);
         finalInfo = {
             ...finalInfo,
-            description: `Results in one of two outcomes. ${successChance}% chance to gain +${gambleChips} chips, scaling with blind cost. ${100 - successChance}% chance to force you to fold and lose half of your chips`,
+            description: `${successChance}% chance to gain +${gambleChips} chips, scaling with blind cost. ${100 - successChance}% chance to force you to fold and lose half of your chips`,
         };
     } else if (cardStr === "chip_stipend") {
         const stipendChips = Math.round(bSize * aMult);
