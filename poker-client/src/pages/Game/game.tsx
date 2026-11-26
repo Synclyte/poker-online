@@ -88,6 +88,7 @@ export function Game() {
     const turnDeadlineRef = useRef<number | null>(null);
     const activeTurnPlayerIdRef = useRef<number | null>(null);
     const roundNameRef = useRef<string | null>(null);
+    const gamesPlayedRef = useRef<number | null>(null);
     const [turnStateTick, setTurnStateTick] = useState<number>(0);
 
     const [draftTimeRemaining, setDraftTimeRemaining] = useState<number | null>(null);
@@ -118,7 +119,15 @@ export function Game() {
     const eventQueueRef = useRef<{ events: MoveEvent[]; nextState: GameStateData }[]>([]);
     const gameStateRef = useRef<GameStateData | null>(gameState);
     const isProcessingQueue = useRef<boolean>(false);
+    const isMountedRef = useRef<boolean>(true);
     const lastPlayedSpecialSlotIndexRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        isMountedRef.current = true;
+        return () => {
+            isMountedRef.current = false;
+        };
+    }, []);
 
     const deckRef = useRef<HTMLDivElement | null>(null);
     const potRef = useRef<HTMLDivElement | null>(null);
@@ -153,24 +162,50 @@ export function Game() {
         1000: { ref: chipImage1000, size: 80 },
     }
     const getChipCounts = (rawAmount: number) => {
-        let remainingChips = rawAmount;
+        const safeAmount = Math.max(0, Math.floor(rawAmount));
+        let remainingChips = safeAmount;
 
-        let thousands = Math.max(0, Math.floor((remainingChips - 7500) / Math.max(1000, 1250 - rawAmount / 250)));
+        let thousands = Math.max(0, Math.floor((remainingChips - 10000) / Math.max(1000, 1400 - safeAmount / 250)));
         remainingChips -= thousands * 1000;
 
-        let twoHundredFifties = Math.max(0, Math.floor((remainingChips - 1500) / Math.max(250, 320 - rawAmount / 200)));
+        let twoHundredFifties = Math.max(0, Math.floor((remainingChips - 1500) / Math.max(250, 320 - safeAmount / 200)));
         remainingChips -= twoHundredFifties * 250;
 
-        let fifties = Math.max(0, Math.floor((remainingChips - 200) / Math.max(50, 70 - rawAmount / 75)));
+        let fifties = Math.max(0, Math.floor((remainingChips - 200) / Math.max(50, 70 - safeAmount / 75)));
         remainingChips -= fifties * 50;
 
-        let twentyFives = Math.max(0, Math.floor((remainingChips - 100) / Math.max(25, 40 - rawAmount / 75)));
+        let twentyFives = Math.max(0, Math.floor((remainingChips - 100) / Math.max(25, 40 - safeAmount / 75)));
         remainingChips -= twentyFives * 25;
 
         let tens = Math.floor(remainingChips / 10);
         remainingChips -= tens * 10;
 
         let ones = remainingChips;
+
+        const SOFT_CAP = 170;
+        const HARD_CAP = 250;
+        const rawTotal = ones + tens + twentyFives + fifties + twoHundredFifties + thousands;
+
+        if (rawTotal > SOFT_CAP) {
+            const excess = rawTotal - SOFT_CAP;
+            const targetTotal = Math.min(
+                HARD_CAP,
+                Math.round(SOFT_CAP + (HARD_CAP - SOFT_CAP) * (excess / (excess + 300)))
+            );
+            const lowerTotal = ones + tens + twentyFives + fifties + twoHundredFifties;
+
+            if (lowerTotal < targetTotal) {
+                thousands = targetTotal - lowerTotal;
+            } else {
+                const scale = targetTotal / Math.max(1, lowerTotal);
+                ones = Math.floor(ones * scale);
+                tens = Math.floor(tens * scale);
+                twentyFives = Math.floor(twentyFives * scale);
+                fifties = Math.floor(fifties * scale);
+                twoHundredFifties = Math.floor(twoHundredFifties * scale);
+                thousands = Math.max(0, targetTotal - (ones + tens + twentyFives + fifties + twoHundredFifties));
+            }
+        }
 
         return {
             1: ones,
@@ -179,7 +214,7 @@ export function Game() {
             50: fifties,
             250: twoHundredFifties,
             1000: thousands,
-        }
+        };
     }
     const loadImg = (ref: React.RefObject<HTMLImageElement | null>, src: string) => {
         const img = new Image();
@@ -229,10 +264,8 @@ export function Game() {
         if (!ctx) return;
 
         const resizeCanvas = () => {
-            if (canvas.parentElement) {
-                canvas.width = canvas.parentElement.clientWidth;
-                canvas.height = canvas.parentElement.clientHeight;
-            }
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
         };
 
         resizeCanvas();
@@ -252,16 +285,19 @@ export function Game() {
                     if (elapsed < 0) continue;
 
                     const progress = Math.min(1, elapsed / p.duration);
-                    const ease = 1 - (1 - progress) * (1 - progress);
+                    const ease = p.isCircle
+                        ? progress * (1.5 - 0.5 * progress)
+                        : 1 - (1 - progress) * (1 - progress);
 
                     const currentX = p.startX + (p.endX - p.startX) * ease;
                     const currentY = p.startY + (p.endY - p.startY) * ease;
                     const chipImg = imgDict[p.type];
 
                     if (chipImg) {
+                        const growFraction = p.isCircle ? 0.32 : 0.2;
                         let currentScale = 1;
-                        if (progress < 0.2) {
-                            currentScale = (1 / 0.2) * progress;
+                        if (progress < growFraction) {
+                            currentScale = progress / growFraction;
                         } else if (progress > 0.7) {
                             currentScale = 1 - (1 / 0.3) * (progress - 0.7);
                         }
@@ -367,10 +403,88 @@ export function Game() {
         }
 
         const totalChips = Object.values(chipCounts).reduce((sum, val) => sum + val, 0);
-        const streamDurationMs = delayFormula(1) + 500;
+        const streamDurationMs = delayFormula(1) + 450;
         soundManager.playChipStreamSFX(totalChips, streamDurationMs);
 
         return delayFormula(1);
+    };
+
+    const spawnCircleChipGain = (playerId: number, rawAmount: number) => {
+        const canvas = canvasRef.current;
+        const seatElem = seatRefs.current[playerId];
+        if (!canvas || !seatElem || rawAmount <= 0) return 0;
+
+        const canvasRect = canvas.getBoundingClientRect();
+        const seatRect = seatElem.getBoundingClientRect();
+
+        const scaleX = canvas.width / (canvasRect.width || 1);
+        const scaleY = canvas.height / (canvasRect.height || 1);
+
+        const endX = ((seatRect.left + seatRect.width / 2) - canvasRect.left) * scaleX;
+        const endY = ((seatRect.top + seatRect.height / 2) - canvasRect.top) * scaleY;
+
+        const chipCounts = getChipCounts(rawAmount);
+        const chipTypes: number[] = [];
+        for (const [type, count] of Object.entries(chipCounts)) {
+            for (let i = 0; i < count; i++) {
+                chipTypes.push(+type);
+            }
+        }
+
+        const totalChips = chipTypes.length;
+        if (totalChips === 0) return 0;
+
+        for (let i = totalChips - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [chipTypes[i], chipTypes[j]] = [chipTypes[j], chipTypes[i]];
+        }
+
+        const chipDelay = Math.pow(totalChips, 0.7);
+        const delayFormula = (frac: number) => frac * chipDelay * 56;
+        const now = performance.now();
+
+        const avgScale = (scaleX + scaleY) / 2;
+        const seatHalfDiag = Math.hypot(seatRect.width / 2, seatRect.height / 2);
+        const baseRadius = (seatHalfDiag + Math.max(95, seatHalfDiag * 0.65)) * avgScale;
+        const startAngleOffset = Math.random() * Math.PI * 2;
+
+        for (let k = 0; k < totalChips; k++) {
+            const angle = startAngleOffset + k * 2.39996323 + (Math.random() - 0.5) * 0.25;
+            const radius = baseRadius + (Math.random() - 0.5) * 28 * avgScale;
+            const startX = endX + Math.cos(angle) * radius;
+            const startY = endY + Math.sin(angle) * radius;
+            const targetX = endX + (Math.random() - 0.5) * 14 * avgScale;
+            const targetY = endY + (Math.random() - 0.5) * 14 * avgScale;
+
+            activeParticlesRef.current.push({
+                x: startX,
+                y: startY,
+                startX,
+                startY,
+                endX: targetX,
+                endY: targetY,
+                startTime: now + delayFormula((k + 0.5) / totalChips),
+                duration: 390 + Math.random() * 130,
+                type: chipTypes[k],
+                isCircle: true,
+            });
+        }
+
+        const streamDurationMs = delayFormula(1) + 420;
+        soundManager.playChipStreamSFX(totalChips, streamDurationMs);
+
+        return delayFormula(1);
+    };
+
+    const applyExternalChipGain = (playerId: number, amount: number) => {
+        if (amount <= 0 || !gameStateRef.current) return;
+        const newState = JSON.parse(JSON.stringify(gameStateRef.current)) as GameStateData;
+        const player = newState.players.find(p => p.id === playerId);
+        if (!player) return;
+
+        player.chips += amount;
+        setGameState(newState);
+        gameStateRef.current = newState;
     };
 
     // used for multi-event chains - updates the intermediate values such that animations appear to modify
@@ -427,22 +541,67 @@ export function Game() {
 
                 const { events, nextState } = update;
                 const previousState = gameStateRef.current;
-                const isEndRound = (r?: string) => r === "showdown" || r === "winnerdraft";
-                const isNewHand = previousState && (
-                    previousState.roundName === "preround" ||
-                    previousState.roundName === "room" ||
-                    isEndRound(previousState.roundName)
-                ) && (nextState.roundName === "preflop" || nextState.roundName === "preround");
-                const enteredPreflop = isNewHand || (nextState.roundName === "preflop" && previousState?.roundName !== "preflop");
-                const enteredShowdown = isEndRound(nextState.roundName) && !isEndRound(previousState?.roundName);
 
                 const applyState = (state: GameStateData) => {
+                    if (!isMountedRef.current) return;
                     gameStateRef.current = state;
                     setGameState(state);
                 };
 
+                if (!previousState || (nextState.roundName === "preround" && events.length === 0)) {
+                    applyState(nextState);
+                    await nextFrame();
+                    continue;
+                }
+
+                const isEndRound = (r?: string) => r === "showdown" || r === "winnerdraft";
+                const isInactiveRound = (r?: string) => r === "preround" || r === "room" || r === "gameover";
+                const isNewGame = Boolean(
+                    previousState && (
+                        previousState.roundName === "gameover" ||
+                        previousState.roundName === "room" ||
+                        (typeof nextState.gamesPlayed === "number" &&
+                            typeof previousState.gamesPlayed === "number" &&
+                            nextState.gamesPlayed < previousState.gamesPlayed)
+                    )
+                );
+                const advancedHand = Boolean(
+                    previousState &&
+                    typeof nextState.gamesPlayed === "number" &&
+                    typeof previousState.gamesPlayed === "number" &&
+                    nextState.gamesPlayed > previousState.gamesPlayed
+                );
+                const hasDealHoleEvent = events.some(ev => ev.action.type === "dealHole");
+                const startedNewHand = Boolean(
+                    previousState &&
+                    !isInactiveRound(nextState.roundName) && (
+                        isNewGame ||
+                        advancedHand ||
+                        isInactiveRound(previousState.roundName) ||
+                        isEndRound(previousState.roundName) ||
+                        (nextState.roundName === "preflop" && previousState.roundName !== "preflop")
+                    ) && (
+                        nextState.roundName === "preflop" || hasDealHoleEvent
+                    )
+                );
+                const enteredPreflop = startedNewHand;
+                const enteredShowdown = isEndRound(nextState.roundName) && (startedNewHand || !isEndRound(previousState?.roundName));
+
                 const cloneCurrentState = (): GameStateData =>
                     gameStateRef.current ? (JSON.parse(JSON.stringify(gameStateRef.current)) as GameStateData) : nextState;
+
+                const firstDealHoleIdx = enteredPreflop
+                    ? events.findIndex(ev => ev.action.type === "dealHole")
+                    : -1;
+                const preHandEvents = firstDealHoleIdx > 0 ? events.slice(0, firstDealHoleIdx) : [];
+                const remainingEvents = firstDealHoleIdx > 0 ? events.slice(firstDealHoleIdx) : events;
+
+                const animateExternalChipGain = async (playerId: number, amount: number) => {
+                    if (amount <= 0) return;
+                    const delay = spawnCircleChipGain(playerId, amount);
+                    await wait(delay + timing.betChipAdded);
+                    applyExternalChipGain(playerId, amount);
+                };
 
                 let deckCardsDealtInBatch = 0;
                 for (const ev of events) {
@@ -454,22 +613,63 @@ export function Game() {
                 const clearTableStateForNewHand = async (nextState: GameStateData) => {
                     if (!gameStateRef.current) return;
 
+                    const wasInActiveStreet = ["preflop", "flop", "turn", "river"].includes(previousState?.roundName ?? "");
+                    const hasNewPlaySpecial = remainingEvents.some(
+                        ev => ev.action.type === "action" && ev.action.action.type === "playSpecial"
+                    );
+                    const carryOverModifiers = isNewGame
+                        ? []
+                        : !hasNewPlaySpecial
+                            ? nextState.modifiers
+                            : (gameStateRef.current.modifiers ?? []).filter((mod: any) => {
+                                if (mod?.effect && typeof mod.effect === "object" && "reveal_card" in mod.effect) {
+                                    return false;
+                                }
+                                if (mod?.expiry && typeof mod.expiry === "object") {
+                                    if ("on_hand_end" in mod.expiry && (mod.expiry.on_hand_end?.count ?? 0) <= 1) {
+                                        return false;
+                                    }
+                                    if ("on_round_end" in mod.expiry && (mod.expiry.on_round_end?.count ?? 0) <= 1) {
+                                        return false;
+                                    }
+                                }
+                                return true;
+                            });
                     const clearedState: GameStateData = {
                         ...gameStateRef.current,
-                        roundName: nextState.roundName || "preflop",
+                        roundName: "preflop",
+                        gamesPlayed: nextState.gamesPlayed ?? (isNewGame ? 0 : gameStateRef.current.gamesPlayed),
+                        winningHandType: "",
+                        pots: [],
+                        roundBetSum: 0,
                         communityCards: [],
                         overallSum: 0,
                         highestBet: 0,
+                        winnerDraftOptions: null,
+                        winnerDraftPendingPlayers: [],
+                        modifiers: carryOverModifiers,
+                        modifierVars: isNewGame ? nextState.modifierVars : gameStateRef.current.modifierVars,
                         deckCards: (nextState.deckCards ?? 52) + deckCardsDealtInBatch,
-                        players: gameStateRef.current.players.map(p => {
-                            const nextP = nextState.players.find(np => np.id === p.id);
+                        players: nextState.players.map(nextP => {
+                            const prevP = gameStateRef.current?.players.find(p => p.id === nextP.id);
                             return {
-                                ...p,
+                                ...nextP,
+                                chips: isNewGame
+                                    ? (config?.startingChips ?? 1000)
+                                    : prevP
+                                        ? (wasInActiveStreet ? prevP.chips + (prevP.totalBet || 0) : prevP.chips)
+                                        : nextP.chips,
                                 holeCards: [],
+                                specialCards: isNewGame ? [] : (prevP?.specialCards ?? []),
+                                specialCardLimit: isNewGame
+                                    ? (config?.specialCardLimit ?? nextP.specialCardLimit)
+                                    : (prevP?.specialCardLimit ?? nextP.specialCardLimit),
                                 handType: '',
                                 totalBet: 0,
                                 roundBet: 0,
-                                folded: nextP ? nextP.folded : false,
+                                isTurn: false,
+                                acted: false,
+                                folded: nextP.folded,
                             };
                         }),
                     };
@@ -480,6 +680,26 @@ export function Game() {
 
                 if (enteredPreflop) {
                     await clearTableStateForNewHand(nextState);
+                    for (const ev of preHandEvents) {
+                        if (ev.action.type === "gainChips" && ev.actorId !== null) {
+                            await animateExternalChipGain(ev.actorId, ev.action.amount);
+                        }
+                    }
+                }
+
+                const blindAmounts = new Map<number, number>();
+                if (enteredPreflop && previousState) {
+                    for (const player of nextState.players) {
+                        const postBlindBets = remainingEvents.reduce((sum, ev) => (
+                            ev.action.type === "action" &&
+                            ev.actorId === player.id &&
+                            (ev.action.betDelta ?? 0) > 0
+                                ? sum + (ev.action.betDelta ?? 0)
+                                : sum
+                        ), 0);
+                        const blindAmount = Math.max(0, player.totalBet - postBlindBets);
+                        blindAmounts.set(player.id, blindAmount);
+                    }
                 }
 
                 const animateInitialBlinds = async () => {
@@ -488,17 +708,14 @@ export function Game() {
                     }
 
                     for (const player of nextState.players) {
-                        const previousPlayer = previousState.players.find(p => p.id === player.id);
-                        const blindAmount = previousPlayer
-                            ? Math.max(0, previousPlayer.chips - player.chips)
-                            : Math.max(player.roundBet, player.totalBet);
+                        const blindAmount = blindAmounts.get(player.id) ?? 0;
 
                         if (blindAmount <= 0) continue;
 
                         const delay = spawnChipStream(`player-${player.id}`, "pot", blindAmount);
 
                         await wait(delay + timing.betChipAdded);
-                        await updateIntermediateState(player.id, -blindAmount, player.roundBet, player.totalBet);
+                        await updateIntermediateState(player.id, -blindAmount, blindAmount, blindAmount);
                     }
                 };
 
@@ -870,6 +1087,7 @@ export function Game() {
                 const animateStructuralEvent = async (
                     event: MoveEvent,
                     nextState: GameStateData,
+                    hideDealtHole: boolean,
                 ): Promise<void> => {
                     if (!gameStateRef.current) return;
 
@@ -944,11 +1162,15 @@ export function Game() {
                                     const selectorFallback = isSpecial
                                         ? `[data-slot-attr="special-${cardIndex}"] .${styles.cardInner}`
                                         : `[data-hole-slot="${event.actorId}:${cardIndex}"] .${styles.cardInner}`;
+                                    const dealtCard: CardView =
+                                        !isSpecial && !toSelf && hideDealtHole
+                                            ? { visibility: "hidden" }
+                                            : nextCard;
 
                                     await executeCardDealAnimation({
                                         activeCards,
                                         cardIndex,
-                                        nextCard,
+                                        nextCard: dealtCard,
                                         refKey,
                                         selectorFallback,
                                         source,
@@ -1108,24 +1330,37 @@ export function Game() {
                             if (!player || !nextPlayer) return;
 
                             const revealedCard = nextPlayer.holeCards[cardIndex];
-                            if (!revealedCard || !player.holeCards[cardIndex]) return;
+                            if (!revealedCard || revealedCard.visibility !== "visible" || !player.holeCards[cardIndex]) return;
+
+                            player.holeCards[cardIndex] = { ...revealedCard, visibility: "hidden" } as CardView;
+                            applyState(structuredClone(viewState));
+                            await nextFrame();
+                            await nextFrame();
 
                             const target = cardInnerRefs.current[`hole-${targetId}-${cardIndex}`] ??
                                 (holeSlotRefs.current[`${targetId}:${cardIndex}`]?.querySelector(`.${styles.cardInner}`) as HTMLDivElement | null) ?? null;
 
                             if (target) {
-                                const flipPromise = triggerInPlaceAnimation(target, target, styles.animatingFlip, timing.flip);
-                                await wait(timing.flip / 2);
-                                player.holeCards[cardIndex] = revealedCard;
-                                applyState(structuredClone(viewState));
-                                await flipPromise;
-                            } else {
-                                player.holeCards[cardIndex] = revealedCard;
-                                applyState(structuredClone(viewState));
-                                await nextFrame();
+                                soundManager.playSound("card_draw");
+                                await triggerInPlaceAnimation(target, target, styles.animatingFlip, timing.flip);
+                                target.classList.add(styles.cardFlipped);
                             }
+
+                            player.holeCards[cardIndex] = revealedCard;
+                            applyState(structuredClone(viewState));
+                            await nextFrame();
                             return;
                         }
+
+                        case "gainChips":
+                            if (
+                                event.actorId !== null &&
+                                event.action.amount > 0 &&
+                                !(enteredShowdown && event.action.afterShowdown)
+                            ) {
+                                await animateExternalChipGain(event.actorId, event.action.amount);
+                            }
+                            return;
 
                         case "draftSkippedFull":
                             showToast("Winner draft skipped: special card slots are full", "warning");
@@ -1138,18 +1373,41 @@ export function Game() {
                     }
                 };
 
+                const postShowdownGains = remainingEvents.filter(
+                    (ev): ev is MoveEvent & { action: { type: "gainChips"; amount: number; afterShowdown?: boolean } } =>
+                        ev.action.type === "gainChips" && Boolean(ev.action.afterShowdown) && ev.actorId !== null
+                );
+                const afterShowdownGainByPlayer = new Map<number, number>();
+                for (const ev of postShowdownGains) {
+                    if (ev.actorId !== null && ev.action.amount > 0) {
+                        afterShowdownGainByPlayer.set(
+                            ev.actorId,
+                            (afterShowdownGainByPlayer.get(ev.actorId) ?? 0) + ev.action.amount
+                        );
+                    }
+                }
+
                 const animatePotDistribution = async (baseState: GameStateData) => {
                     for (const nextPlayer of nextState.players) {
-                        const previousPlayer = baseState.players.find((player) => player.id === nextPlayer.id);
+                        const basePlayer = baseState.players.find((player) => player.id === nextPlayer.id);
 
-                        if (!previousPlayer) continue;
+                        if (!basePlayer) continue;
 
-                        const gain = nextPlayer.chips - previousPlayer.chips;
+                        const potEndChips = nextPlayer.chips - (afterShowdownGainByPlayer.get(nextPlayer.id) ?? 0);
+                        const gain = potEndChips - basePlayer.chips;
                         if (gain <= 0) continue;
 
                         const delay = spawnChipStream("pot", `player-${nextPlayer.id}`, gain);
 
                         await wait(delay + timing.betChipAdded);
+
+                        if (gameStateRef.current) {
+                            const updated = JSON.parse(JSON.stringify(gameStateRef.current)) as GameStateData;
+                            const player = updated.players.find(p => p.id === nextPlayer.id);
+                            if (player) player.chips += gain;
+                            updated.overallSum = Math.max(0, updated.overallSum - gain);
+                            applyState(updated);
+                        }
                     }
                 };
 
@@ -1162,9 +1420,9 @@ export function Game() {
 
                 const trackedBets = new Map<number, number>(
                     previousState.players.map((player) => {
-                        const nextP = nextState.players.find(p => p.id === player.id);
-                        const blindAmount = Math.max(0, player.chips - (nextP?.chips ?? player.chips));
-                        const initialBet = enteredPreflop ? blindAmount : player.totalBet;
+                        const initialBet = enteredPreflop
+                            ? (blindAmounts.get(player.id) ?? 0)
+                            : player.totalBet;
                         return [player.id, initialBet];
                     }),
                 );
@@ -1174,13 +1432,18 @@ export function Game() {
                     setGameState({ ...gameStateRef.current });
                 }
 
-                for (const event of events) {
+                let sawActionInBatch = false;
+                for (const event of remainingEvents) {
                     if (event.action.type === "action") {
+                        sawActionInBatch = true;
                         await animateAction(event, trackedBets);
                     } else {
-                        await animateStructuralEvent(event, nextState);
+                        const hideDealtHole = enteredShowdown && !sawActionInBatch;
+                        await animateStructuralEvent(event, nextState, hideDealtHole);
                     }
                 }
+
+                const postEventsState = cloneCurrentState();
 
                 if (enteredShowdown) {
                     // showdown has to be done in a complicated manner, as the reveal order and animations need to completely
@@ -1188,7 +1451,7 @@ export function Game() {
                     // this is done by generating multiple consecutive pseudo-states to force expected animations
 
                     // first, card ranks/suits are given values (while not updating anything else), so cards can flip correctly
-                    const currentState = gameStateRef.current ?? previousState;
+                    const currentState = postEventsState;
                     const preFlipState: GameStateData = {
                         ...nextState,
                         overallSum: currentState.overallSum,
@@ -1218,14 +1481,14 @@ export function Game() {
                     const flipPromises: Promise<void>[] = [];
 
                     for (const nextPlayer of nextState.players) {
-                        const previousPlayer = previousState.players.find(
+                        const currPlayer = currentState.players.find(
                             player => player.id === nextPlayer.id,
                         );
 
                         for (let cardIndex = 0; cardIndex < nextPlayer.holeCards.length; cardIndex += 1) {
                             const nextCard = nextPlayer.holeCards[cardIndex];
                             const wasVisible =
-                                previousPlayer?.holeCards[cardIndex]?.visibility === "visible";
+                                currPlayer?.holeCards[cardIndex]?.visibility === "visible";
 
                             if (nextCard?.visibility !== "visible" || wasVisible) continue;
 
@@ -1247,14 +1510,14 @@ export function Game() {
                     // finalize state with visibility "visible" to lock cards face-up
                     const finalRevealState: GameStateData = {
                         ...nextState,
-                        overallSum: previousState.overallSum,
-                        pots: previousState.pots,
+                        overallSum: postEventsState.overallSum,
+                        pots: postEventsState.pots,
                         players: nextState.players.map(nextPlayer => {
-                            const previousPlayer = previousState.players.find(p => p.id === nextPlayer.id);
+                            const postEventsPlayer = postEventsState.players.find(p => p.id === nextPlayer.id);
 
                             return {
                                 ...nextPlayer,
-                                chips: previousPlayer?.chips ?? nextPlayer.chips,
+                                chips: postEventsPlayer?.chips ?? nextPlayer.chips,
                             };
                         }),
                     };
@@ -1263,7 +1526,13 @@ export function Game() {
                     await nextFrame();
 
                     await wait(timing.showdown);
-                    await animatePotDistribution(previousState);
+                    await animatePotDistribution(postEventsState);
+
+                    for (const ev of postShowdownGains) {
+                        if (ev.actorId !== null && ev.action.amount > 0) {
+                            await animateExternalChipGain(ev.actorId, ev.action.amount);
+                        }
+                    }
                 }
 
                 // always finish by always updating to the correct final state, to ensure the final state is always accurate
@@ -1271,6 +1540,7 @@ export function Game() {
             }
         } finally {
             isProcessingQueue.current = false;
+            if (!isMountedRef.current) return;
             setIsAnimating(false);
 
             if (eventQueueRef.current.length > 0) {
@@ -1311,10 +1581,16 @@ export function Game() {
                 const nextTurnPlayer = response.gameState.players.find(p => p.isTurn);
                 const nextTurnId = nextTurnPlayer?.id ?? null;
                 const nextRound = response.gameState.roundName;
+                const nextGamesPlayed = response.gameState.gamesPlayed ?? null;
 
-                if (nextTurnId !== activeTurnPlayerIdRef.current || nextRound !== roundNameRef.current) {
+                if (
+                    nextTurnId !== activeTurnPlayerIdRef.current ||
+                    nextRound !== roundNameRef.current ||
+                    nextGamesPlayed !== gamesPlayedRef.current
+                ) {
                     activeTurnPlayerIdRef.current = nextTurnId;
                     roundNameRef.current = nextRound;
+                    gamesPlayedRef.current = nextGamesPlayed;
                     turnDeadlineRef.current = null;
                     turnStartTimeRef.current = null;
                     setTurnTimeRemaining(null);
@@ -1416,15 +1692,20 @@ export function Game() {
         setSelectedTargetCardIndex(null);
     };
 
-    const selectTargetCardIndex = (cardIndex: number) => {
+    const selectTargetCardIndex = (cardIndex: number, targetPlayerId?: number | null) => {
         if (!selectedSpecialCardValue) return;
 
         const info = getSpecialCardInfo(selectedSpecialCardValue);
-        if (
-            info.target === "communityCard" ||
-            info.target === "selfCard" ||
-            (info.target === "otherCard" && selectedSpecialTarget !== null)
-        ) {
+        if (info.target === "communityCard") {
+            setSelectedSpecialTarget(null);
+            setSelectedTargetCardIndex(cardIndex);
+        } else if (info.target === "selfCard") {
+            if (myId != null) setSelectedSpecialTarget(myId);
+            setSelectedTargetCardIndex(cardIndex);
+        } else if (info.target === "selfOrCommunityCard") {
+            setSelectedSpecialTarget(targetPlayerId ?? null);
+            setSelectedTargetCardIndex(cardIndex);
+        } else if (info.target === "otherCard" && selectedSpecialTarget !== null) {
             setSelectedTargetCardIndex(cardIndex);
         }
     };
@@ -1456,6 +1737,16 @@ export function Game() {
                 }
 
                 targetId = myId;
+                cardIndex = selectedTargetCardIndex;
+                break;
+
+            case "selfOrCommunityCard":
+                if (selectedTargetCardIndex == null) {
+                    showToast("Select one of your hole cards or a community card.", "warning");
+                    return;
+                }
+
+                targetId = selectedSpecialTarget === myId && myId != null ? myId : undefined;
                 cardIndex = selectedTargetCardIndex;
                 break;
 
@@ -1552,9 +1843,13 @@ export function Game() {
 
     const activeModifiers: ActiveModifierInfo[] = useMemo(() => {
         return (gameState?.modifiers ?? []).map((m: any, idx: number) =>
-            parseModifier(m, idx, config?.blindSize, gameState?.modifierVars?.anteMult)
+            parseModifier(m, idx, config?.blindSize, gameState?.modifierVars?.anteMult, gameState?.modifierVars?.potMult, {
+                myId,
+                players: gameState?.players,
+                lobbyPlayers,
+            })
         );
-    }, [gameState?.modifiers, config?.blindSize, gameState?.modifierVars?.anteMult]);
+    }, [gameState?.modifiers, config?.blindSize, gameState?.modifierVars?.anteMult, gameState?.modifierVars?.potMult, myId, gameState?.players, lobbyPlayers]);
 
     const [displayedModifiers, setDisplayedModifiers] = useState<(ActiveModifierInfo & { isRemoving?: boolean })[]>([]);
 
@@ -1711,7 +2006,7 @@ export function Game() {
     return (
         <div className={styles.gameContainer}>
             <WinnerDraftModal
-                options={!isAnimating && gameState?.roundName === "winnerdraft" ? gameState.winnerDraftOptions : null}
+                options={!isAnimating && gameState?.winnerDraftOptions && gameState.winnerDraftOptions.length > 0 ? gameState.winnerDraftOptions : null}
                 timeRemaining={draftTimeRemaining}
                 blindSize={config?.blindSize}
                 anteMult={gameState?.modifierVars?.anteMult}
@@ -1803,8 +2098,10 @@ export function Game() {
                             containerClassName={styles.communityCards}
                             renderCard={(card, idx) => {
                                 const selectedSpecialInfo = selectedSpecialCardValue ? getSpecialCardInfo(selectedSpecialCardValue) : null;
-                                const canTargetCommunity = selectedSpecialInfo?.target === "communityCard" && (card !== null || selectedSpecialCardValue === "draw_card_community");
-                                const isSelectedCard = canTargetCommunity && selectedTargetCardIndex === idx;
+                                const canTargetCommunity =
+                                    (selectedSpecialInfo?.target === "communityCard" || selectedSpecialInfo?.target === "selfOrCommunityCard") &&
+                                    (card !== null || selectedSpecialCardValue === "draw_card_community");
+                                const isSelectedCard = canTargetCommunity && selectedSpecialTarget === null && selectedTargetCardIndex === idx;
 
                                 return (
                                     <div
@@ -1815,9 +2112,10 @@ export function Game() {
                                             ${canTargetCommunity ? styles.targetableCard : ''}
                                             ${isSelectedCard ? styles.selectedTargetCard : ''}
                                         `}
+                                        role={canTargetCommunity ? "button" : undefined}
                                         onClick={() => {
                                             if (canTargetCommunity) {
-                                                selectTargetCardIndex(idx);
+                                                selectTargetCardIndex(idx, null);
                                             }
                                         }}
                                     >
@@ -1880,6 +2178,7 @@ export function Game() {
                                 ${isSelectedTarget ? styles.selectedTargetSeat : ''}
                             `}
                             style={{ left: `${left}%`, top: `${top}%` }}
+                            role={canTargetPlayer ? "button" : undefined}
                             onClick={() => {
                                 if (canTargetPlayer) {
                                     selectSpecialTarget(p.id);
@@ -1921,10 +2220,14 @@ export function Game() {
                                             containerClassName={styles.holeCards}
                                             renderCard={(card, cardIndex) => {
                                                 const canTargetHoleCard = selectedSpecialInfo && (
-                                                    (isMe && selectedSpecialInfo.target === "selfCard" && card !== null) ||
+                                                    (isMe && (selectedSpecialInfo.target === "selfCard" || selectedSpecialInfo.target === "selfOrCommunityCard") && card !== null) ||
                                                     (!isMe && selectedSpecialInfo.target === "otherCard" && selectedSpecialTarget === p.id)
                                                 );
-                                                const isSelectedHoleCard = canTargetHoleCard && selectedTargetCardIndex === cardIndex;
+                                                const isSelectedHoleCard = Boolean(
+                                                    canTargetHoleCard &&
+                                                    selectedTargetCardIndex === cardIndex &&
+                                                    (!isMe || selectedSpecialInfo?.target !== "selfOrCommunityCard" || selectedSpecialTarget === p.id)
+                                                );
 
                                                 return (
                                                     <div
@@ -1936,10 +2239,11 @@ export function Game() {
                                                             ${canTargetHoleCard ? styles.targetableCard : ''}
                                                             ${isSelectedHoleCard ? styles.selectedTargetCard : ''}
                                                         `}
+                                                        role={canTargetHoleCard ? "button" : undefined}
                                                         onClick={(e) => {
                                                             if (canTargetHoleCard) {
                                                                 e.stopPropagation();
-                                                                selectTargetCardIndex(cardIndex);
+                                                                selectTargetCardIndex(cardIndex, p.id);
                                                             }
                                                         }}
                                                     >
@@ -1978,10 +2282,10 @@ export function Game() {
             </main>
 
             <footer className={styles.gameFooter}>
-                {gameState?.roundName !== "room" && meInGame && (config?.specialCardLimit ?? 0) > 0 && (
+                {gameState?.roundName !== "room" && meInGame && ((meInGame.specialCardLimit ?? config?.specialCardLimit ?? 0) > 0 || meInGame.specialCards.length > 0) && (
                     <div className={styles.specialCardBar}>
                         {(() => {
-                            const limit = config?.specialCardLimit ?? 0;
+                            const limit = meInGame.specialCardLimit ?? config?.specialCardLimit ?? 0;
                             const displayLimit = Math.max(limit, meInGame.specialCards.length);
 
                             return (
@@ -2035,6 +2339,10 @@ export function Game() {
                                                                             cardInfo.requiresTargetIndex &&
                                                                             selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select one of your own hole cards</span>}
 
+                                                                        {cardInfo.target === "selfOrCommunityCard" &&
+                                                                            cardInfo.requiresTargetIndex &&
+                                                                            selectedTargetCardIndex === null && <span className={styles.specialSelectionInstruction}>Select a hole or community card</span>}
+
                                                                         {cardInfo.target === "otherCard" &&
                                                                             cardInfo.requiresTargetIndex &&
                                                                             selectedSpecialTarget !== null &&
@@ -2061,9 +2369,7 @@ export function Game() {
                                                         }}
                                                         selected={isSelected}
                                                         onClick={(card && isMyTurn && !meInGame.acted) ? () => {
-                                                            setSelectedSpecialCardIndex(
-                                                                selectedSpecialCardIndex === index ? null : index,
-                                                            );
+                                                            setSelectedSpecialCardIndex(prev => (prev === index ? null : index));
                                                             setSelectedSpecialTarget(null);
                                                             setSelectedTargetCardIndex(null);
                                                         } : undefined}

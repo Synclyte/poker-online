@@ -9,6 +9,8 @@ export interface ChatMessage {
     senderName: string;
     text: string;
     timestamp: number;
+    isSystem?: boolean;
+    isError?: boolean;
 }
 
 interface ChatProps {
@@ -39,6 +41,8 @@ export const Chat: React.FC<ChatProps> = ({
     const [unreadCount, setUnreadCount] = useState(0);
 
     const messageListRef = useRef<HTMLDivElement | null>(null);
+    const isCollapsedRef = useRef(isCollapsed);
+    isCollapsedRef.current = isCollapsed;
 
     const scrollToBottom = () => {
         if (messageListRef.current) {
@@ -59,12 +63,18 @@ export const Chat: React.FC<ChatProps> = ({
         socket.emit("getChatHistory");
 
         const handleChatHistory = (history: ChatMessage[]) => {
-            setMessages(history || []);
+            setMessages((prev) => {
+                const localSystemMsgs = prev.filter((m) => m.isSystem);
+                if (localSystemMsgs.length === 0) return history || [];
+                const merged = [...(history || []), ...localSystemMsgs];
+                merged.sort((a, b) => a.timestamp - b.timestamp);
+                return merged;
+            });
         };
 
         const handleChatMessage = (msg: ChatMessage) => {
             setMessages((prev) => [...prev, msg]);
-            if (isCollapsed) {
+            if (isCollapsedRef.current) {
                 setUnreadCount((c) => c + 1);
             }
         };
@@ -76,10 +86,16 @@ export const Chat: React.FC<ChatProps> = ({
             socket.off("chatHistory", handleChatHistory);
             socket.off("chatMessage", handleChatMessage);
         };
-    }, [socket, isConnected, roomId, isCollapsed]);
+    }, [socket, isConnected, roomId]);
 
     const handleSend = () => {
-        if (!socket || !isConnected || !inputText.trim()) return;
+        const trimmed = inputText.trim();
+        if (!socket || !isConnected || !trimmed) return;
+        if (trimmed.startsWith("/")) {
+            socket.emit("consoleCommand", trimmed);
+            setInputText('');
+            return;
+        }
         socket.emit("sendChatMessage", inputText);
         setInputText('');
     };
@@ -152,6 +168,7 @@ export const Chat: React.FC<ChatProps> = ({
                         <div className={styles.messageList} ref={messageListRef}>
                             {messages.map((msg) => {
                                 const isSelf = msg.senderId !== null && msg.senderId === myId;
+                                const isSystem = Boolean(msg.isSystem);
 
                                 return (
                                     <div key={msg.id} className={styles.messageItem}>
@@ -159,11 +176,20 @@ export const Chat: React.FC<ChatProps> = ({
                                             className={[
                                                 styles.senderName,
                                                 isSelf ? styles.selfName : '',
+                                                isSystem ? styles.systemName : '',
                                             ].filter(Boolean).join(' ')}
                                         >
-                                            {msg.senderName}:
+                                            {isSystem ? `[${msg.senderName}]:` : `${msg.senderName}:`}
                                         </span>
-                                        <span className={styles.msgText}>{msg.text}</span>
+                                        <span
+                                            className={[
+                                                styles.msgText,
+                                                isSystem && msg.isError ? styles.errorMsgText : '',
+                                                isSystem && !msg.isError ? styles.systemMsgText : '',
+                                            ].filter(Boolean).join(' ')}
+                                        >
+                                            {msg.text}
+                                        </span>
                                     </div>
                                 );
                             })}

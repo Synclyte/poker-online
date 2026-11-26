@@ -120,6 +120,13 @@ interface ChatMessage {
     text: string;
     timestamp: number;
     isSystem?: boolean;
+    isError?: boolean;
+}
+
+interface ConsoleCommandResult {
+    ok: boolean;
+    message: string;
+    events: MoveEvent[];
 }
 
 interface RoomData {
@@ -600,11 +607,13 @@ function broadcastNextRoundVotes(room: RoomData) {
 function startNextHandForRoom(room: RoomData, errorSocket?: Socket): boolean {
     const currentRound = room.game.get_round();
     if (currentRound === "room" || currentRound === "gameover") {
+        updateGameConfig(room);
         const initResult = JSON.parse(room.game.initialise());
         if (isError(initResult)) {
             errorSocket?.emit(initResult.responseType, initResult.message);
             return false;
         }
+        broadcastGameState(room, []);
     }
 
     clearRoomDraftTimer(room.roomId);
@@ -667,6 +676,131 @@ function broadcastGameState(room: RoomData, events: MoveEvent[] = []) {
     }
 }
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const LOOPBACK_IPS = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+const PROXY_HEADERS = [
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+    "cf-connecting-ip",
+];
+
+function extractHostname(hostHeader: string): string {
+    const trimmed = hostHeader.trim().toLowerCase();
+    if (trimmed.startsWith("[")) {
+        const closeIdx = trimmed.indexOf("]");
+        return closeIdx !== -1 ? trimmed.slice(0, closeIdx + 1) : trimmed;
+    }
+    return trimmed.split(":")[0] || "";
+}
+
+function isLocalConsoleAllowed(socket: Socket): boolean {
+    if (process.env.NODE_ENV === "production") {
+        return false;
+    }
+
+    const headers = socket.handshake.headers;
+    for (const proxyHeader of PROXY_HEADERS) {
+        if (headers[proxyHeader]) {
+            return false;
+        }
+    }
+
+    const remoteAddr = ((socket.conn as { remoteAddress?: string } | undefined)?.remoteAddress || socket.handshake.address || "")
+        .trim()
+        .toLowerCase();
+    if (!LOOPBACK_IPS.has(remoteAddr)) {
+        return false;
+    }
+
+    const hostHeader = typeof headers.host === "string" ? extractHostname(headers.host) : "";
+    if (!LOOPBACK_HOSTS.has(hostHeader)) {
+        return false;
+    }
+
+    if (typeof headers.origin === "string" && headers.origin.trim() !== "") {
+        try {
+            const originHostname = new URL(headers.origin).hostname.toLowerCase();
+            if (!LOOPBACK_HOSTS.has(originHostname)) {
+                return false;
+            }
+        } catch {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function sendPrivateSystemChat(socket: Socket, text: string, isError = false) {
+    const msg: ChatMessage = {
+        id: `sys-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        senderId: null,
+        senderName: "Console",
+        text,
+        timestamp: Date.now(),
+        isSystem: true,
+        isError,
+    };
+    socket.emit("chatMessage", msg);
+}
+
+function handleConsoleCommand(socket: Socket, room: RoomData, session: SessionData, rawText: string) {
+    if (!isLocalConsoleAllowed(socket)) {
+        sendPrivateSystemChat(socket, "Console commands are disabled on non-local servers.", true);
+        return;
+    }
+
+    const activeRounds = ["preflop", "flop", "turn", "river"];
+    const prevRound = room.game.get_round();
+    const prevTurn = activeRounds.includes(prevRound) ? room.game.get_current_turn_player() : null;
+
+    let result: ConsoleCommandResult;
+    try {
+        result = JSON.parse(room.game.debug_command(session.playerId, rawText)) as ConsoleCommandResult;
+    } catch (e) {
+        sendPrivateSystemChat(socket, "Failed to execute console command.", true);
+        return;
+    }
+
+    if (!result.ok) {
+        sendPrivateSystemChat(socket, result.message, true);
+        return;
+    }
+
+    sendPrivateSystemChat(socket, result.message, false);
+
+    const nextRound = room.game.get_round();
+    const nextTurn = activeRounds.includes(nextRound) ? room.game.get_current_turn_player() : null;
+    const cmdName = rawText.trim().replace(/^\/+/, "").split(/\s+/)[0]?.toLowerCase() ?? "";
+
+    if (nextRound !== "showdown" && nextRound !== "preround" && room.nextRoundVotes.size > 0) {
+        room.nextRoundVotes.clear();
+        broadcastNextRoundVotes(room);
+    }
+
+    broadcastGameState(room, result.events ?? []);
+
+    if (prevRound !== nextRound) {
+        broadcastLobbyUpdate(room);
+    }
+
+    if (prevRound !== nextRound || prevTurn !== nextTurn || cmdName === "skip_hand" || cmdName === "skip_street") {
+        if (!activeRounds.includes(nextRound)) {
+            clearRoomTurnTimer(room.roomId);
+        } else {
+            startTurnTransition(room.roomId, room.game, room.config.turnTimeout * 1000);
+        }
+
+        if (nextRound !== "winnerdraft") {
+            clearRoomDraftTimer(room.roomId);
+        } else {
+            startDraftTransition(room.roomId, room.game);
+        }
+    }
+}
+
 function viewableEvents(viewerId: number, events: MoveEvent[] = []): MoveEvent[] {
     return events.filter(
         (event) => !event.private || event.actorId === viewerId,
@@ -692,7 +826,7 @@ function getCompleteConfig(config: any): GameConfig | undefined {
             blindSize: typeof parsedConfig.blindSize === "number" ? parsedConfig.blindSize : 20,
             minRaise: parsedConfig.minRaise ?? 10,
             startingChips: parsedConfig.startingChips ?? 1000,
-            specialCardLimit: typeof parsedConfig.specialCardLimit === "number" ? parsedConfig.specialCardLimit : 3,
+            specialCardLimit: typeof parsedConfig.specialCardLimit === "number" ? parsedConfig.specialCardLimit : 4,
             deckType: parsedConfig.deckType ?? "standard",
             turnTimeout: parsedConfig.turnTimeout ?? 40,
             isPrivate: parsedConfig.isPrivate ?? false,
@@ -936,6 +1070,10 @@ io.on("connection", (socket: Socket) => {
         withGameContext(socket, false, (room, session) => {
             if (typeof text !== "string" || !text.trim()) return;
             const cleanedText = text.trim().substring(0, 250);
+            if (cleanedText.startsWith("/")) {
+                handleConsoleCommand(socket, room, session, cleanedText);
+                return;
+            }
             const senderPlayer = room.players.find(p => p.id === session.playerId);
             const senderName = senderPlayer ? senderPlayer.name : `Player ${session.playerId}`;
 
@@ -953,6 +1091,13 @@ io.on("connection", (socket: Socket) => {
             if (room.chatMessages.length > 100) room.chatMessages.shift();
 
             io.to(room.roomId).emit("chatMessage", msg);
+        });
+    });
+
+    socket.on("consoleCommand", (text: string) => {
+        withGameContext(socket, false, (room, session) => {
+            if (typeof text !== "string" || !text.trim()) return;
+            handleConsoleCommand(socket, room, session, text.trim().substring(0, 250));
         });
     });
 
@@ -1226,6 +1371,7 @@ io.on("connection", (socket: Socket) => {
         withGameContext(socket, true, (room, session) => {
             try {
                 // lobby -> preround
+                updateGameConfig(room);
                 const initialiseResult = JSON.parse(room.game.initialise());
                 if (isError(initialiseResult)) {
                     return io.to(session.socketId).emit(

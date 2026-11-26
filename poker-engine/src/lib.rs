@@ -119,6 +119,7 @@ pub(crate) struct Player {
     cards: Vec<ExpandedCard>,
     card_visibility: Vec<Vec<usize>>,
     special_cards: Vec<SpecialCard>,
+    pub(crate) extra_special_capacity: usize,
     id: usize,
     acted: bool,
     turn_ended: bool,
@@ -135,6 +136,7 @@ impl Player {
             cards: Vec::new(), 
             card_visibility: Vec::new(), 
             special_cards: Vec::new(), 
+            extra_special_capacity: 0,
             id, 
             acted: false, 
             turn_ended: false, 
@@ -145,7 +147,7 @@ impl Player {
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub(crate) enum Action {
     Raise { amount: i32 },
     Fold,
@@ -211,8 +213,8 @@ impl Action {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-enum Round {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd)]
+pub(crate) enum Round {
     Room,
     Preround,
     Preflop,
@@ -393,15 +395,15 @@ pub(crate) struct MoveEvent {
 }
 
 #[derive(Serialize, Clone, Debug)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub(crate) enum MoveAction {
     Action {
         action: Action,
-        #[serde(rename = "betDelta", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         bet_delta: Option<i32>,
-        #[serde(rename = "roundBet", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         round_bet: Option<i32>,
-        #[serde(rename = "totalBet", skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none")]
         total_bet: Option<i32>,
     },
     DealHole { count: usize },
@@ -412,6 +414,11 @@ pub(crate) enum MoveAction {
     ReplaceHole { index: usize },
     ReplaceCommunity { index: usize },
     RevealCard { target_id: usize, card_index: usize },
+    GainChips {
+        amount: i32,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        after_showdown: bool,
+    },
     SwapBot,
     SwapHuman,
     DraftSkippedFull,
@@ -446,8 +453,8 @@ impl Game {
             20, 
             10, 
             1000, 
-            0, 
-            DeckType::Standard, 
+            4, 
+            DeckType::Standard,  
             4, 
             30,
             Some(25),
@@ -576,15 +583,20 @@ impl Game {
 
         self.games_played = 0;
         self.winner_ids.clear();
+        self.players.retain(|p| !p.remove);
 
         let start_chips = if self.ctx.starting_chips > 0 { self.ctx.starting_chips } else { 1000 };
         self.players.iter_mut().for_each(|p| {
             p.chips = start_chips;
+            p.total_bet = 0;
+            p.round_bet = 0;
             p.folded = false;
             p.acted = false;
             p.turn_ended = false;
             p.cards = Vec::new();
+            p.card_visibility.clear();
             p.special_cards = Vec::new();
+            p.extra_special_capacity = 0;
         });
 
         self.deck = self.ctx.deck_type.get_associated_deck();
@@ -725,17 +737,18 @@ impl Game {
             let new_ai = AI::new(AIType::Safe);
             self.players[index].player_type = PlayerType::Computer(new_ai);
 
-            if self.round == Round::WinnerDraft {
+            if !self.pending_drafts.is_empty() {
                 if let Some(pos) = self.pending_drafts.iter().position(|d| d.player_id == pid) {
                     let draft = self.pending_drafts.remove(pos);
                     if let Some(&card) = draft.options.first() {
-                        self.grant_drafted_card(pid, card, &mut event_log);
+                        self.grant_drafted_card(pid, card, draft.bypass_limit, &mut event_log);
                     }
-                    if self.pending_drafts.is_empty() {
+                    if self.round == Round::WinnerDraft && self.pending_drafts.is_empty() {
                         self.round = Round::Showdown;
                     }
                 }
-            } else if self.turn_index == index && !self.players[index].folded && self.round >= Round::Preflop && self.round < Round::Showdown {
+            }
+            if self.turn_index == index && !self.players[index].folded && self.round >= Round::Preflop && self.round < Round::Showdown {
                 self.advance_game_loop(&mut event_log);
             }
         } else {
@@ -1162,6 +1175,20 @@ impl Game {
         from_idx
     }
 
+    fn get_next_player_with_chips(&self, from_idx: usize) -> usize {
+        let len = self.players.len();
+        if len == 0 {
+            return 0;
+        }
+        for offset in 1..=len {
+            let idx = (from_idx + offset) % len;
+            if self.players[idx].chips > 0 {
+                return idx;
+            }
+        }
+        from_idx % len
+    }
+
     fn make_player_pay_blind(&mut self, player_index: usize, blind_size: i32, events: &mut Vec<MoveEvent>) -> i32 {
         let actual_blind = blind_size.min(self.players[player_index].chips);
         self.players[player_index].chips -= actual_blind;
@@ -1213,8 +1240,11 @@ impl Game {
             return;
         }
 
-        if self.games_played > 0 || self.players[self.dealer_index].chips == 0 {
-            self.dealer_index = self.get_next_active_player_index(self.dealer_index);
+        if self.dealer_index >= self.players.len() {
+            self.dealer_index = 0;
+        }
+        if self.players[self.dealer_index].chips == 0 {
+            self.dealer_index = self.get_next_player_with_chips(self.dealer_index);
         }
 
         self.round = Round::Preflop;
@@ -1480,9 +1510,19 @@ impl Game {
         self.prepare_winner_drafts(&[winner_id], raw_pot, total_chips, events);
     }
 
-    fn grant_drafted_card(&mut self, player_id: usize, card: SpecialCard, events: &mut Vec<MoveEvent>) {
+    pub(crate) fn player_special_card_limit(&self, player_index: usize) -> usize {
+        if self.ctx.special_card_limit == 0 {
+            0
+        } else {
+            self.ctx
+                .special_card_limit
+                .saturating_add(self.players[player_index].extra_special_capacity)
+        }
+    }
+
+    fn grant_drafted_card(&mut self, player_id: usize, card: SpecialCard, bypass_limit: bool, events: &mut Vec<MoveEvent>) {
         if let Ok(idx) = self.get_player_index(player_id) {
-            if self.players[idx].special_cards.len() < self.ctx.special_card_limit {
+            if bypass_limit || self.players[idx].special_cards.len() < self.player_special_card_limit(idx) {
                 self.players[idx].special_cards.push(card);
                 special::on_event(GameEvent::SpecialReceived { player_id, card }, self, events);
                 events.push(MoveEvent {
@@ -1532,7 +1572,7 @@ impl Game {
                 continue;
             }
 
-            if self.players[idx].special_cards.len() >= self.ctx.special_card_limit {
+            if self.players[idx].special_cards.len() >= self.player_special_card_limit(idx) {
                 events.push(MoveEvent {
                     actor_id: Some(winner_id),
                     action: MoveAction::DraftSkippedFull,
@@ -1549,13 +1589,14 @@ impl Game {
             match self.players[idx].player_type {
                 PlayerType::Computer(_) => {
                     if let Some(&auto_card) = options.first() {
-                        self.grant_drafted_card(winner_id, auto_card, events);
+                        self.grant_drafted_card(winner_id, auto_card, false, events);
                     }
                 }
                 PlayerType::Human => {
                     self.pending_drafts.push(WinnerDraft {
                         player_id: winner_id,
                         options,
+                        bypass_limit: false,
                     });
                 }
             }
@@ -1569,7 +1610,7 @@ impl Game {
     }
 
     pub(crate) fn pick_winner_draft(&mut self, player_id: usize, choice_index: usize) -> Result<Vec<MoveEvent>, GameError> {
-        if self.round != Round::WinnerDraft {
+        if self.round != Round::WinnerDraft && self.pending_drafts.is_empty() {
             return Err(GameError::InvalidRound);
         }
 
@@ -1587,9 +1628,9 @@ impl Game {
         let chosen_card = draft.options[choice_index];
 
         let mut events = Vec::new();
-        self.grant_drafted_card(player_id, chosen_card, &mut events);
+        self.grant_drafted_card(player_id, chosen_card, draft.bypass_limit, &mut events);
 
-        if self.pending_drafts.is_empty() {
+        if self.round == Round::WinnerDraft && self.pending_drafts.is_empty() {
             self.round = Round::Showdown;
         }
 
@@ -1606,7 +1647,7 @@ impl Game {
 
         for draft in drafts {
             if let Some(&auto_card) = draft.options.first() {
-                self.grant_drafted_card(draft.player_id, auto_card, &mut events);
+                self.grant_drafted_card(draft.player_id, auto_card, draft.bypass_limit, &mut events);
             }
         }
 
@@ -1616,6 +1657,16 @@ impl Game {
 
     fn end_hand(&mut self, events: &mut Vec<MoveEvent>) {
         self.games_played += 1;
+        let removed_before_dealer = self
+            .players
+            .iter()
+            .take(self.dealer_index)
+            .filter(|p| p.remove)
+            .count();
+        let dealer_removed = self
+            .players
+            .get(self.dealer_index)
+            .map_or(false, |p| p.remove);
         self.players.retain(|p| !p.remove);
 
         special::on_event(GameEvent::HandEnded, self, events);
@@ -1626,11 +1677,21 @@ impl Game {
         }
 
         if self.players.is_empty() {
+            self.dealer_index = 0;
             self.round = Round::Room;
             return;
         }
 
-        self.dealer_index = (self.dealer_index + 1) % self.players.len();
+        let adjusted_dealer = self.dealer_index.saturating_sub(removed_before_dealer) % self.players.len();
+        self.dealer_index = if dealer_removed {
+            if self.players[adjusted_dealer].chips > 0 {
+                adjusted_dealer
+            } else {
+                self.get_next_player_with_chips(adjusted_dealer)
+            }
+        } else {
+            self.get_next_player_with_chips(adjusted_dealer)
+        };
         self.round = Round::Preround;
     }
 
@@ -1676,11 +1737,12 @@ impl Game {
         for offset in 0..len {
             let p_index = (self.dealer_index + 1 + offset) % len;
             let special_card_count = self.players[p_index].special_cards.len();
-            if self.players[p_index].folded || special_card_count >= self.ctx.special_card_limit as usize {
+            let player_limit = self.player_special_card_limit(p_index);
+            if self.players[p_index].folded || special_card_count >= player_limit {
                 continue;
             }
 
-            let special_capacity = self.ctx.special_card_limit.saturating_sub(special_card_count);
+            let special_capacity = player_limit.saturating_sub(special_card_count);
             if special_capacity <= 0 {
                 continue;
             }
@@ -1706,5 +1768,300 @@ impl Game {
         special::on_event(GameEvent::GameEnded, self, &mut Vec::new());
 
         self.round = Round::GameEnd;
+    }
+
+    pub(crate) fn execute_console_command(
+        &mut self,
+        command: api::ConsoleCommand,
+    ) -> Result<(api::ConsoleCommandOutcome, Vec<MoveEvent>), GameError> {
+        if matches!(command, api::ConsoleCommand::Help) {
+            return Ok((api::ConsoleCommandOutcome::Help, Vec::new()));
+        }
+
+        if matches!(self.round, Round::Room | Round::GameEnd) {
+            return Err(GameError::InvalidRound);
+        }
+
+        let mut events = Vec::new();
+
+        match command {
+            api::ConsoleCommand::Help => unreachable!(),
+            api::ConsoleCommand::SetChips { player_id, chips } => {
+                if chips < 0 {
+                    return Err(GameError::InvalidAction);
+                }
+
+                let idx = self.get_player_index(player_id)?;
+                self.players[idx].chips = chips;
+
+                if matches!(self.round, Round::Preflop | Round::Flop | Round::Turn | Round::River)
+                    && self.current_turn_complete()
+                {
+                    self.advance_game_loop(&mut events);
+                }
+
+                Ok((api::ConsoleCommandOutcome::ChipsSet { player_id, chips }, events))
+            }
+            api::ConsoleCommand::GiveCard { target, card, count } => {
+                if count == 0 {
+                    return Err(GameError::InvalidAction);
+                }
+                if self.round == Round::Preround {
+                    return Err(GameError::InvalidRound);
+                }
+
+                match target {
+                    api::CardTarget::Board => {
+                        for _ in 0..count {
+                            self.community.push(card);
+                        }
+                        events.push(MoveEvent {
+                            actor_id: None,
+                            action: MoveAction::DealCommunity { count },
+                            private: false,
+                        });
+                    }
+                    api::CardTarget::Player(player_id) => {
+                        let idx = self.get_player_index(player_id)?;
+                        for _ in 0..count {
+                            self.players[idx].cards.push(card);
+                            self.players[idx].card_visibility.push(Vec::new());
+                        }
+                        events.push(MoveEvent {
+                            actor_id: Some(player_id),
+                            action: MoveAction::DealHole { count },
+                            private: false,
+                        });
+                    }
+                }
+
+                Ok((api::ConsoleCommandOutcome::CardGiven { target, card, count }, events))
+            }
+            api::ConsoleCommand::GiveSpecial { player_id, card, count } => {
+                if count == 0 {
+                    return Err(GameError::InvalidAction);
+                }
+                let idx = self.get_player_index(player_id)?;
+                for _ in 0..count {
+                    self.players[idx].special_cards.push(card);
+                    special::on_event(GameEvent::SpecialReceived { player_id, card }, self, &mut events);
+                }
+                events.push(MoveEvent {
+                    actor_id: Some(player_id),
+                    action: MoveAction::DealSpecial { count },
+                    private: false,
+                });
+
+                Ok((api::ConsoleCommandOutcome::SpecialGiven { player_id, card, count }, events))
+            }
+            api::ConsoleCommand::DealSpecial { player_id, count } => {
+                if count == 0 {
+                    return Err(GameError::InvalidAction);
+                }
+                let idx = self.get_player_index(player_id)?;
+                let cards = SpecialCard::draw_special_cards(count, player_id, self);
+                if cards.is_empty() {
+                    return Err(GameError::InvalidAction);
+                }
+
+                let dealt_count = cards.len();
+                self.players[idx].special_cards.extend(cards.iter().copied());
+                events.push(MoveEvent {
+                    actor_id: Some(player_id),
+                    action: MoveAction::DealSpecial { count: dealt_count },
+                    private: false,
+                });
+
+                Ok((api::ConsoleCommandOutcome::SpecialDealt { player_id, cards }, events))
+            }
+            api::ConsoleCommand::SkipStreet { count } => {
+                if count == 0 {
+                    return Err(GameError::InvalidAction);
+                }
+                if !matches!(self.round, Round::Preflop | Round::Flop | Round::Turn | Round::River) {
+                    return Err(GameError::InvalidRound);
+                }
+
+                let mut skipped = 0usize;
+                for _ in 0..count {
+                    if !matches!(self.round, Round::Preflop | Round::Flop | Round::Turn | Round::River) {
+                        break;
+                    }
+
+                    // Sweep active street bets into a single pot without creating 1-player side-pots on unmatched bets
+                    let street_bets: i32 = self.players.iter().map(|p| p.round_bet).sum();
+                    if street_bets > 0 {
+                        let eligible_ids: Vec<usize> = {
+                            let unfolded: Vec<usize> = self
+                                .players
+                                .iter()
+                                .filter(|p| !p.folded)
+                                .map(|p| p.id)
+                                .collect();
+                            if unfolded.is_empty() {
+                                self.players.iter().filter(|p| p.round_bet > 0).map(|p| p.id).collect()
+                            } else {
+                                unfolded
+                            }
+                        };
+
+                        if self.pots.is_empty() {
+                            self.pots.push(Pot {
+                                amount: 0,
+                                players: eligible_ids.clone(),
+                            });
+                        }
+                        if let Some(last_pot) = self.pots.last_mut() {
+                            last_pot.amount += street_bets;
+                            for pid in &eligible_ids {
+                                if !last_pot.players.contains(pid) {
+                                    last_pot.players.push(*pid);
+                                }
+                            }
+                        }
+                        for p in &mut self.players {
+                            p.round_bet = 0;
+                        }
+                        self.round_pool = 0;
+                    }
+
+                    self.advance_to_next_round(&mut events);
+                    skipped += 1;
+                }
+
+                if matches!(self.round, Round::Preflop | Round::Flop | Round::Turn | Round::River) {
+                    self.advance_game_loop(&mut events);
+                }
+
+                Ok((
+                    api::ConsoleCommandOutcome::StreetsSkipped {
+                        skipped,
+                        round: self.round,
+                    },
+                    events,
+                ))
+            }
+            api::ConsoleCommand::SkipHand { count } => {
+                if count == 0 {
+                    return Err(GameError::InvalidAction);
+                }
+
+                if matches!(self.round, Round::Preflop | Round::Flop | Round::Turn | Round::River) {
+                    let refunds: Vec<(usize, i32)> = self
+                        .players
+                        .iter_mut()
+                        .filter_map(|p| {
+                            let refunded = p.total_bet;
+                            if refunded > 0 {
+                                p.chips += refunded;
+                            }
+                            p.total_bet = 0;
+                            p.round_bet = 0;
+                            if refunded > 0 { Some((p.id, refunded)) } else { None }
+                        })
+                        .collect();
+
+                    for (player_id, amount) in refunds {
+                        special::on_event(GameEvent::BetWithdrawn { player_id, amount }, self, &mut events);
+                    }
+                    special::on_event(GameEvent::StreetEnded, self, &mut events);
+                    self.pots.clear();
+                    self.round_pool = 0;
+                    self.bet = 0;
+                }
+
+                self.pending_drafts.clear();
+
+                let mut skipped = 0usize;
+                for _ in 0..count {
+                    self.end_hand(&mut events);
+                    skipped += 1;
+                    if matches!(self.round, Round::GameEnd | Round::Room) {
+                        break;
+                    }
+                }
+
+                if self.round == Round::Preround {
+                    self.start_new_hand(&mut events);
+                    if matches!(self.round, Round::Preflop | Round::Flop | Round::Turn | Round::River) {
+                        self.advance_game_loop(&mut events);
+                    }
+                }
+
+                Ok((
+                    api::ConsoleCommandOutcome::HandsSkipped {
+                        skipped,
+                        games_played: self.games_played,
+                    },
+                    events,
+                ))
+            }
+            api::ConsoleCommand::CardDraft {
+                player_id,
+                simulated_chips,
+            } => {
+                let current_pot: i32 = self.pots.iter().map(|p| p.amount).sum::<i32>() + self.round_pool;
+                let chips = simulated_chips.unwrap_or_else(|| {
+                    if current_pot > 0 {
+                        current_pot
+                    } else {
+                        (self.ctx.starting_chips / 2)
+                            .max(self.ctx.blind_size.saturating_mul(5))
+                            .max(1)
+                    }
+                });
+                if chips < 0 {
+                    return Err(GameError::InvalidAction);
+                }
+
+                let idx = self.get_player_index(player_id)?;
+
+                let total_chips = {
+                    let sum = self.players.iter().map(|p| p.chips).sum::<i32>() + current_pot;
+                    if sum > 0 {
+                        sum
+                    } else {
+                        (self.ctx.starting_chips * self.players.len().max(1) as i32).max(1)
+                    }
+                };
+
+                let pot_ratio = (chips as f64 / total_chips as f64).clamp(0.0, 1.0);
+                let options = SpecialCard::draw_winner_draft_options(3, pot_ratio, self);
+                if options.is_empty() {
+                    return Err(GameError::InvalidAction);
+                }
+
+                match self.players[idx].player_type {
+                    PlayerType::Computer(_) => {
+                        let card = options[0];
+                        self.grant_drafted_card(player_id, card, true, &mut events);
+                        Ok((
+                            api::ConsoleCommandOutcome::BotCardDrafted {
+                                player_id,
+                                simulated_chips: chips,
+                                card,
+                            },
+                            events,
+                        ))
+                    }
+                    PlayerType::Human => {
+                        self.pending_drafts.retain(|d| d.player_id != player_id);
+                        self.pending_drafts.push(WinnerDraft {
+                            player_id,
+                            options,
+                            bypass_limit: true,
+                        });
+                        Ok((
+                            api::ConsoleCommandOutcome::HumanCardDraftStarted {
+                                player_id,
+                                simulated_chips: chips,
+                                pot_ratio,
+                            },
+                            events,
+                        ))
+                    }
+                }
+            }
+        }
     }
 }

@@ -153,6 +153,14 @@ pub(crate) fn on_event(event: GameEvent, game: &mut Game, move_events: &mut Vec<
                     if refund > 0 {
                         if let Ok(idx) = game.get_player_index(player_id) {
                             game.players[idx].chips += refund;
+                            move_events.push(MoveEvent {
+                                actor_id: Some(player_id),
+                                action: MoveAction::GainChips {
+                                    amount: refund,
+                                    after_showdown: false,
+                                },
+                                private: false,
+                            });
                         }
                     }
                     game.special.modifiers.active.retain(|m| {
@@ -201,6 +209,14 @@ pub(crate) fn on_event(event: GameEvent, game: &mut Game, move_events: &mut Vec<
                 let refund = ((net_loss as f64) * rate).round() as i32;
                 if refund > 0 {
                     game.players[idx].chips += refund;
+                    move_events.push(MoveEvent {
+                        actor_id: Some(player_id),
+                        action: MoveAction::GainChips {
+                            amount: refund,
+                            after_showdown: true,
+                        },
+                        private: false,
+                    });
                 }
             }
 
@@ -225,6 +241,14 @@ pub(crate) fn on_event(event: GameEvent, game: &mut Game, move_events: &mut Vec<
                 for player_id in stipend_recipients {
                     if let Ok(idx) = game.get_player_index(player_id) {
                         game.players[idx].chips += stipend_payout;
+                        move_events.push(MoveEvent {
+                            actor_id: Some(player_id),
+                            action: MoveAction::GainChips {
+                                amount: stipend_payout,
+                                after_showdown: false,
+                            },
+                            private: false,
+                        });
                     }
                 }
             }
@@ -249,6 +273,14 @@ pub(crate) fn on_event(event: GameEvent, game: &mut Game, move_events: &mut Vec<
                     if payout > 0 {
                         if let Ok(idx) = game.get_player_index(player_id) {
                             game.players[idx].chips += payout;
+                            move_events.push(MoveEvent {
+                                actor_id: Some(player_id),
+                                action: MoveAction::GainChips {
+                                    amount: payout,
+                                    after_showdown: false,
+                                },
+                                private: false,
+                            });
                         }
                     }
                 }
@@ -508,6 +540,15 @@ impl RoundModifiers {
                         player_id: second_id, ..
                     },
                     StackMode::Effect,
+                )
+                | (
+                    ModifierEffect::ExtraSlot {
+                        player_id: first_id, ..
+                    },
+                    ModifierEffect::ExtraSlot {
+                        player_id: second_id, ..
+                    },
+                    StackMode::Effect,
                 ) => first_id == second_id,
                 (a, b, _) => a == b,
             };
@@ -537,6 +578,16 @@ impl RoundModifiers {
                         },
                     ) => {
                         *first_rate = 1.0 - (1.0 - *first_rate) * (1.0 - *second_rate);
+                    }
+                    (
+                        ModifierEffect::ExtraSlot {
+                            extra_slots: first_slots, ..
+                        },
+                        ModifierEffect::ExtraSlot {
+                            extra_slots: second_slots, ..
+                        },
+                    ) => {
+                        *first_slots += *second_slots;
                     }
                     _ => {}
                 },
@@ -666,11 +717,18 @@ pub(crate) enum ModifierEffect {
     LossInsurance { player_id: usize, rebate_rate: f64 },
     BetRebate { player_id: usize, rebate_rate: f64, accumulated_bet: i32 },
     ChipStipend { player_id: usize },
+    ExtraSlot { player_id: usize, extra_slots: usize },
 }
 impl ModifierEffect {
     pub(crate) fn is_visible(&self, viewer_id: usize) -> bool {
         match self {
-            ModifierEffect::RevealCard { target_id, card_index: _, viewer_id: v_id } => *target_id == viewer_id || *v_id == viewer_id,
+            ModifierEffect::RevealCard { target_id, card_index: _, viewer_id: v_id } => {
+                *target_id == viewer_id || *v_id == viewer_id
+            }
+            ModifierEffect::LossInsurance { player_id, .. }
+            | ModifierEffect::BetRebate { player_id, .. }
+            | ModifierEffect::ChipStipend { player_id }
+            | ModifierEffect::ExtraSlot { player_id, .. } => *player_id == viewer_id,
             _ => true,
         }
     }
@@ -730,6 +788,7 @@ pub(crate) enum TargetKind {
     None,
     SelfCard,
     CommunityCard,
+    SelfOrCommunityCard,
     OpponentCard,
     OpponentPlayer,
 }
@@ -838,6 +897,7 @@ fn pick_weighted_index<T>(items: &[(T, f64)], rng: &mut impl RngExt) -> Option<u
 pub(crate) struct WinnerDraft {
     pub(crate) player_id: usize,
     pub(crate) options: Vec<SpecialCard>,
+    pub(crate) bypass_limit: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -849,7 +909,7 @@ pub(crate) enum SpecialCard {
     ReplaceCardCommunity, // replaces last drawn community card with new card
     RemoveCardCommunity, // remove last drawn community card without replacement
     DrawCardCommunity, // add new community card
-    RevealOpponentCard, // reveals random card from selected opponent
+    RevealCard, // reveals random card from selected opponent
     WithdrawBet, // fold, taking bet back
     AnteUp, // increases blind size for the remainder of the game
     PotMult, // multiplies the current size of the pot
@@ -887,7 +947,8 @@ pub(crate) enum SpecialCard {
     LossInsurance, // refunds 40% of lost chips this hand if used before round loss
     BetRebate, // tracks player expenditure for 3 hands and returns 20%
     ChipStipend, // pays 1x effective blind at the end of each hand for 4 hands
-    Draw, // deals 2 revealed hole cards to user, 1 revealed to opponents, 1 community card
+    Draw, // deals 3 revealed hole cards to user, 1 revealed to opponents, 1 community card
+    ExtraSlot, // permanently increases user special card capacity by 1
 }
 impl fmt::Display for SpecialCard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -895,13 +956,13 @@ impl fmt::Display for SpecialCard {
     }
 }
 
-pub(crate) const ALL_SPECIAL_CARDS: [SpecialCard; 41] = [
+pub(crate) const ALL_SPECIAL_CARDS: [SpecialCard; 42] = [
     SpecialCard::ReplaceCardSelf,
     SpecialCard::DrawCardSelf,
     SpecialCard::ReplaceCardCommunity,
     SpecialCard::RemoveCardCommunity,
     SpecialCard::DrawCardCommunity,
-    SpecialCard::RevealOpponentCard,
+    SpecialCard::RevealCard,
     SpecialCard::WithdrawBet,
     SpecialCard::AnteUp,
     SpecialCard::PotMult,
@@ -937,6 +998,7 @@ pub(crate) const ALL_SPECIAL_CARDS: [SpecialCard; 41] = [
     SpecialCard::BetRebate,
     SpecialCard::ChipStipend,
     SpecialCard::Draw,
+    SpecialCard::ExtraSlot,
 ];
 
 impl SpecialCard {
@@ -1032,8 +1094,8 @@ impl SpecialCard {
                     Ok(())
                 },
             },
-            SpecialCard::RevealOpponentCard => CardDef {
-                id: "reveal_opponent_card",
+            SpecialCard::RevealCard => CardDef {
+                id: "reveal_card",
                 roles: vec![CardRole::Hand],
                 target: TargetKind::OpponentCard,
                 stack_mode: StackMode::Separate,
@@ -1198,8 +1260,18 @@ impl SpecialCard {
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
-                    ctx.game.players[ctx.player_idx].chips +=
-                        (ctx.game.ctx.blind_size as f64 * ctx.game.special.ante_multiplier() * 2.5) as i32;
+                    let gain = (ctx.game.ctx.blind_size as f64 * ctx.game.special.ante_multiplier() * 2.5) as i32;
+                    if gain > 0 {
+                        ctx.game.players[ctx.player_idx].chips += gain;
+                        ctx.events.push(MoveEvent {
+                            actor_id: Some(ctx.player_id),
+                            action: MoveAction::GainChips {
+                                amount: gain,
+                                after_showdown: false,
+                            },
+                            private: false,
+                        });
+                    }
                     Ok(())
                 },
             },
@@ -1209,14 +1281,24 @@ impl SpecialCard {
                 target: TargetKind::None,
                 stack_mode: StackMode::None,
                 pools: vec![
-                    (CardPool::Standard, |l| 1.1 * l.powi(2)),
-                    (CardPool::WinnerDraft, |l| 1.1 * l.powi(2)),
+                    (CardPool::Standard, |l| 4.0 * l),
+                    (CardPool::WinnerDraft, |l| 4.0 * l),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
                     if ctx.game.ctx.rng.random_bool(ctx.game.special.gamble_success_chance()) {
-                        ctx.game.players[ctx.player_idx].chips +=
-                            (ctx.game.ctx.blind_size as f64 * ctx.game.special.ante_multiplier() * 7.5) as i32;
+                        let gain = (ctx.game.ctx.blind_size as f64 * ctx.game.special.ante_multiplier() * 7.5) as i32;
+                        if gain > 0 {
+                            ctx.game.players[ctx.player_idx].chips += gain;
+                            ctx.events.push(MoveEvent {
+                                actor_id: Some(ctx.player_id),
+                                action: MoveAction::GainChips {
+                                    amount: gain,
+                                    after_showdown: false,
+                                },
+                                private: false,
+                            });
+                        }
                         ctx.game.special.modifiers.vars.gamble_success_chance *= 0.9;
                     } else {
                         withdraw_bet(ctx.player_id, ctx.player_idx, ctx.game, ctx.events);
@@ -1234,7 +1316,7 @@ impl SpecialCard {
                 stack_mode: StackMode::Duration,
                 pools: vec![
                     (CardPool::Standard, |_| 1.0),
-                    (CardPool::WinnerDraft, |l| 0.25 * l.powi(2)),
+                    (CardPool::WinnerDraft, |l| 1.0 * l),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
@@ -1474,8 +1556,8 @@ impl SpecialCard {
                 target: TargetKind::OpponentPlayer,
                 stack_mode: StackMode::None,
                 pools: vec![
-                    (CardPool::Standard, |l| 1.2 * l),
-                    (CardPool::WinnerDraft, |l| 1.2 * l),
+                    (CardPool::Standard, |l| 1.5 * l),
+                    (CardPool::WinnerDraft, |l| 1.5 * l),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
@@ -1547,7 +1629,7 @@ impl SpecialCard {
                 target: TargetKind::None,
                 stack_mode: StackMode::None,
                 pools: vec![
-                    (CardPool::WinnerDraft, |l| 0.1 * l.powi(2))
+                    (CardPool::WinnerDraft, |l| 0.5 * l.powi(2))
                 ],
                 on_use: |ctx| {
                     ctx.game.deal_special_cards(1, ctx.events);
@@ -1556,19 +1638,23 @@ impl SpecialCard {
             },
             SpecialCard::RankBoost => CardDef {
                 id: "rank_boost",
-                roles: vec![CardRole::Hand],
-                target: TargetKind::SelfCard,
+                roles: vec![CardRole::Hand, CardRole::Board],
+                target: TargetKind::SelfOrCommunityCard,
                 stack_mode: StackMode::None,
                 pools: vec![
-                    (CardPool::Standard, |l| 2.5 * l),
-                    (CardPool::WinnerDraft, |l| 2.5 * l),
+                    (CardPool::Standard, |l| 3.0 * l),
+                    (CardPool::WinnerDraft, |l| 3.0 * l),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
-                    let target_card = ctx.game.players[ctx.player_idx]
-                        .cards
-                        .get_mut(ctx.card_index)
-                        .ok_or(GameError::CardIndexInvalid)?;
+                    let target_card = if ctx.target_id == ctx.player_id {
+                        ctx.game.players[ctx.player_idx]
+                            .cards
+                            .get_mut(ctx.card_index)
+                    } else {
+                        ctx.game.community.get_mut(ctx.card_index)
+                    }
+                    .ok_or(GameError::CardIndexInvalid)?;
                     match target_card {
                         ExpandedCard::PlayingCard(card) => {
                             card.rank = match card.rank {
@@ -1595,8 +1681,8 @@ impl SpecialCard {
                 target: TargetKind::SelfCard,
                 stack_mode: StackMode::None,
                 pools: vec![
-                    (CardPool::Standard, |l| 2.0 * l),
-                    (CardPool::WinnerDraft, |l| 2.0 * l),
+                    (CardPool::Standard, |l| 3.0 * l),
+                    (CardPool::WinnerDraft, |l| 3.0 * l),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
@@ -1638,8 +1724,8 @@ impl SpecialCard {
                 target: TargetKind::None,
                 stack_mode: StackMode::None,
                 pools: vec![
-                    (CardPool::Standard, |l| 1.5 * l),
-                    (CardPool::WinnerDraft, |l| 1.5 * l),
+                    (CardPool::Standard, |l| 2.0 * l),
+                    (CardPool::WinnerDraft, |l| 2.0 * l),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
@@ -1670,8 +1756,8 @@ impl SpecialCard {
                 target: TargetKind::None,
                 stack_mode: StackMode::Effect,
                 pools: vec![
-                    (CardPool::Standard, |l| (1.5 * l - 3.0).max(0f64)),
-                    (CardPool::WinnerDraft, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::Standard, |l| (4.0 * l - 6.0).max(0f64)),
+                    (CardPool::WinnerDraft, |l| (4.0 * l - 6.0).max(0f64)),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
@@ -1695,8 +1781,8 @@ impl SpecialCard {
                 target: TargetKind::None,
                 stack_mode: StackMode::Separate,
                 pools: vec![
-                    (CardPool::Standard, |l| (1.5 * l - 3.0).max(0f64)),
-                    (CardPool::WinnerDraft, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::Standard, |l| (4.0 * l - 6.0).max(0f64)),
+                    (CardPool::WinnerDraft, |l| (4.0 * l - 6.0).max(0f64)),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
@@ -1719,10 +1805,10 @@ impl SpecialCard {
                 id: "chip_stipend",
                 roles: vec![CardRole::Economy],
                 target: TargetKind::None,
-                stack_mode: StackMode::Duration,
+                stack_mode: StackMode::Separate,
                 pools: vec![
-                    (CardPool::Standard, |l| (1.5 * l - 3.0).max(0f64)),
-                    (CardPool::WinnerDraft, |l| (1.5 * l - 3.0).max(0f64)),
+                    (CardPool::Standard, |l| 3.5 * l),
+                    (CardPool::WinnerDraft, |l| 3.5 * l),
                     (CardPool::SpecialBurst, |_| 1.0),
                 ],
                 on_use: |ctx| {
@@ -1747,7 +1833,7 @@ impl SpecialCard {
                 pools: vec![],
                 on_use: |ctx| {
                     let all_player_ids: Vec<usize> = ctx.game.players.iter().map(|p| p.id).collect();
-                    for _ in 0..2 {
+                    for _ in 0..3 {
                         ctx.game.deal_hole_card(ctx.player_id, ctx.events);
                         let p_idx = ctx.game.get_player_index(ctx.player_id)?;
                         let drawn_index = ctx.game.players[p_idx].cards.len() - 1;
@@ -1769,6 +1855,32 @@ impl SpecialCard {
                     }
 
                     ctx.game.deal_community_cards(1, ctx.events);
+                    Ok(())
+                },
+            },
+            SpecialCard::ExtraSlot => CardDef {
+                id: "extra_slot",
+                roles: vec![CardRole::Chaos],
+                target: TargetKind::None,
+                stack_mode: StackMode::Effect,
+                pools: vec![
+                    (CardPool::Standard, |l| (0.5 * l.powi(2) - 2.0).max(0f64)),
+                    (CardPool::WinnerDraft, |l| (1.0 * l.powi(2) - 4.0).max(0f64)),
+                    (CardPool::SpecialBurst, |_| 1.0),
+                ],
+                on_use: |ctx| {
+                    ctx.game.players[ctx.player_idx].extra_special_capacity += 1;
+                    ctx.game.special.modifiers.combine_or_add_modifiers(
+                        Modifier {
+                            effect: ModifierEffect::ExtraSlot {
+                                player_id: ctx.player_id,
+                                extra_slots: 1,
+                            },
+                            expiry: ModifierExpiry::OnGameEnd,
+                            source: vec![ctx.player_id],
+                        },
+                        ctx.stack_mode,
+                    );
                     Ok(())
                 },
             },
@@ -1825,6 +1937,17 @@ impl SpecialCard {
             TargetKind::CommunityCard => {
                 if c_index >= game.community.len() {
                     return Err(GameError::CardIndexInvalid);
+                }
+            }
+            TargetKind::SelfOrCommunityCard => {
+                if t_id == player_id {
+                    check_player_owns_card(player_idx, c_index, game)?;
+                } else if t_id == usize::MAX {
+                    if c_index >= game.community.len() {
+                        return Err(GameError::CardIndexInvalid);
+                    }
+                } else {
+                    return Err(GameError::InvalidTargetPlayer);
                 }
             }
             TargetKind::OpponentPlayer => {
@@ -2101,18 +2224,20 @@ pub(crate) fn give_special_card(special_card: SpecialCard, count: usize, ignore_
         .get_player_index(player_id)
         .map_err(|_| GameError::InvalidTargetPlayer)?;
 
+    let player_limit = game.player_special_card_limit(p_id);
+
     // return without error if player is folded or special cards are disabled
-    if game.players[p_id].folded || game.ctx.special_card_limit == 0 {
+    if game.players[p_id].folded || player_limit == 0 {
         return Ok(())
     }
 
-    if !ignore_limit && game.players[p_id].special_cards.len() >= game.ctx.special_card_limit {
+    if !ignore_limit && game.players[p_id].special_cards.len() >= player_limit {
         return Err(GameError::SpecialCardsFull);
     }
 
     let mut given_cards = 0;
     for _ in 0..count {
-        if !ignore_limit && game.players[p_id].special_cards.len() >= game.ctx.special_card_limit {
+        if !ignore_limit && game.players[p_id].special_cards.len() >= player_limit {
             break;
         } else {
             game.players[p_id].special_cards.push(special_card);

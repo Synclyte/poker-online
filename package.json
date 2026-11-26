@@ -8,7 +8,7 @@
   ],
   "scripts": {
     "build:engine": "cd poker-engine && wasm-pack build --target nodejs --out-dir ../poker-server/pkg",
-    "dev:server": "cd poker-server && npx tsx watch server.ts",
+    "dev:server": "cd poker-server && npx tsx watch --include ./pkg/poker_engine.js server.ts",
     "dev:client": "cd poker-client && npm run dev"
   },
   "author": "Jake Sutcliffe",

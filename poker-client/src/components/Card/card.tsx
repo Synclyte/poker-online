@@ -1,6 +1,6 @@
 import React from 'react';
 import styles from '../../pages/Game/game.module.css';
-import { CardView, SpecialCardInfo, ActiveModifierInfo } from '../../pages/Game/game.types';
+import { CardView, SpecialCardInfo, ActiveModifierInfo, PlayerState, PlayerLobbyInfo } from '../../pages/Game/game.types';
 import { getAssetUrl } from '../../utils/assets';
 
 export function parseCardString(cardStr: string) {
@@ -29,6 +29,48 @@ export function parseCardString(cardStr: string) {
         suitSymbol: suitInfo.symbol,
         color: suitInfo.color
     };
+}
+
+export function formatCardName(card?: CardView | null): string {
+    if (!card || !("value" in card) || !card.value || card.value === "Unmarked") {
+        return "Blank Card";
+    }
+    if (card.value.startsWith("*")) {
+        return "Joker";
+    }
+
+    const parts = card.value.split(":");
+    const rawRank = (parts[0] || "").toLowerCase();
+    const rawSuit = (parts[1] || "").toLowerCase();
+
+    const rankNames: Record<string, string> = {
+        "2": "2",
+        "3": "3",
+        "4": "4",
+        "5": "5",
+        "6": "6",
+        "7": "7",
+        "8": "8",
+        "9": "9",
+        "10": "10",
+        "j": "Jack",
+        "q": "Queen",
+        "k": "King",
+        "a": "Ace",
+    };
+    const suitNames: Record<string, string> = {
+        "s": "Spades",
+        "c": "Clubs",
+        "h": "Hearts",
+        "d": "Diamonds",
+    };
+
+    const rankName = rankNames[rawRank];
+    if (!rankName) {
+        return "Blank Card";
+    }
+    const suitName = suitNames[rawSuit];
+    return suitName ? `${rankName} of ${suitName}` : rankName;
 }
 
 export const specialCardInfo: Record<string, SpecialCardInfo> = {
@@ -65,7 +107,7 @@ export const specialCardInfo: Record<string, SpecialCardInfo> = {
         requiresTargetIndex: true,
         imgSrc: "/src/assets/special/special_remove_card_community.png",
     },
-    reveal_opponent_card: {
+    reveal_card: {
         label: "Reveal Card",
         description: "Reveals a chosen hole card of a selected opponent to you until the end of the current hand",
         target: "otherCard",
@@ -86,7 +128,7 @@ export const specialCardInfo: Record<string, SpecialCardInfo> = {
     },
     pot_mult: {
         label: "Pot Multiplier",
-        description: "Multiplies player winnings from the pot this hand by 1.4x",
+        description: "Multiplies player winnings from the pot this hand by 1.5x",
         target: "none",
         imgSrc: "/src/assets/special/special_pot_mult.png",
     },
@@ -239,43 +281,57 @@ export const specialCardInfo: Record<string, SpecialCardInfo> = {
         label: "Special Spread",
         description: "Deals 1 special card to all players",
         target: "none",
+        imgSrc: "/src/assets/special/special_special_spread.png",
     },
     rank_boost: {
         label: "Rank Boost",
-        description: "Increases the rank of a selected hole card by 1",
-        target: "selfCard",
+        description: "Increases the rank of a selected hole or community card by 1",
+        target: "selfOrCommunityCard",
         requiresTargetIndex: true,
+        imgSrc: "/src/assets/special/special_rank_boost.png",
     },
     suit_match: {
         label: "Suit Match",
         description: "Changes a selected hole card's suit to match a random other card in your hand",
         target: "selfCard",
         requiresTargetIndex: true,
+        imgSrc: "/src/assets/special/special_suit_match.png",
     },
     redraw_hand: {
         label: "Redraw Hand",
         description: "Redraws all of the cards in your hand",
         target: "none",
+        imgSrc: "/src/assets/special/special_redraw_hand.png",
     },
     loss_insurance: {
         label: "Loss Insurance",
         description: "Refunds 40% of chips spent by you this hand on round loss",
         target: "none",
+        imgSrc: "/src/assets/special/special_loss_insurance.png",
     },
     bet_rebate: {
         label: "Bet Rebate",
         description: "Refunds 20% of all chips spent by you in the next 3 hands after the effect expires",
         target: "none",
+        imgSrc: "/src/assets/special/special_bet_rebate.png",
     },
     chip_stipend: {
         label: "Chip Stipend",
         description: "Gain 1x blind size at the end of each hand for 4 hands, scaling with ante",
         target: "none",
+        imgSrc: "/src/assets/special/special_chip_stipend.png",
     },
     draw: {
         label: "Draw",
-        description: "Small chance to obtain when drawing a hole card. When used, deals 2 hole cards to you, 1 hole card to each opponent, and 1 community card. All drawn cards are revealed to everyone",
+        description: "Small chance to obtain when drawing a hole card. When used, deals 3 hole cards to you, 1 hole card to each opponent, and 1 community card. All drawn cards are revealed to everyone",
         target: "none",
+        imgSrc: "/src/assets/special/special_draw.png",
+    },
+    extra_slot: {
+        label: "Extra Slot",
+        description: "Permanently increases your special card capacity by 1 for the rest of the game",
+        target: "none",
+        imgSrc: "/src/assets/special/special_extra_slot.png",
     },
 };
 
@@ -330,7 +386,7 @@ export function getSpecialCardInfo(
 
 export function buildSpecialCardFrontHTML(cardValue?: string | null): string {
     const info = cardValue ? getSpecialCardInfo(cardValue) : null;
-    const imgSrc = info?.imgSrc ? getAssetUrl(info.imgSrc) : "";
+    const imgSrc = info?.imgSrc ?? "";
     const imgHtml = imgSrc
         ? `<img src="${imgSrc}" alt="${info?.label ?? ''}" class="${styles.specialImage}" draggable="false" />`
         : `<span>${info?.label ?? "Special"}</span>`;
@@ -377,18 +433,26 @@ export function getSanitisedHandName(internalName: string): string {
     return handNameMap[internalName] ?? internalName;
 }
 
+export interface ModifierParseContext {
+    myId?: number | null;
+    players?: PlayerState[];
+    lobbyPlayers?: PlayerLobbyInfo[];
+}
+
 export function parseModifier(
     mod: any,
     index: number,
     blindSize?: number,
-    anteMult?: number
+    anteMult?: number,
+    potMult?: number,
+    context?: ModifierParseContext
 ): ActiveModifierInfo {
     let name = "Active Modifier";
     let description = "An active game modifier.";
     let duration = "Active";
     let typeKey = "unknown";
 
-    let imgSrc = "/src/assets/special/special.png";
+    let imgSrc = getAssetUrl("/src/assets/special/special.png");
 
     if (typeof mod.effect === "string") {
         switch (mod.effect) {
@@ -413,22 +477,46 @@ export function parseModifier(
         }
     } else if (mod.effect && typeof mod.effect === "object") {
         if ("pot_multiplier" in mod.effect) {
-            const val = mod.effect.pot_multiplier?.multiplier ?? 1.4;
-            name = `Pot Multiplier`;
+            const rawVal = mod.effect.pot_multiplier?.multiplier ?? potMult ?? 1.5;
+            const val = Math.round(rawVal * 100) / 100;
+            name = `Pot Multiplier (${val}x)`;
             description = `Multiplies all pot gains by ${val}x.`;
             typeKey = "pot_multiplier";
             imgSrc = getSpecialCardInfo("pot_mult").imgSrc ?? imgSrc;
         } else if ("ante_multiplier" in mod.effect) {
-            const val = mod.effect.ante_multiplier?.multiplier ?? 2.0;
-            name = `Ante Multiplier`;
+            const rawVal = mod.effect.ante_multiplier?.multiplier ?? 2.0;
+            const val = Math.round(rawVal * 100) / 100;
+            name = `Ante Multiplier (${val}x)`;
             description = `Multiplies minimum bets and blinds by ${val}x.`;
             typeKey = "ante_multiplier";
             imgSrc = getSpecialCardInfo("ante_up").imgSrc ?? imgSrc;
         } else if ("reveal_card" in mod.effect) {
+            const data = mod.effect.reveal_card;
+            const targetId: number | undefined = data?.target_id;
+            const cardIndex: number | undefined = data?.card_index;
+            const viewerId: number | undefined = data?.viewer_id;
+            const getPlayerName = (id?: number) => {
+                if (id === undefined) return "Player";
+                return context?.lobbyPlayers?.find(p => p.id === id)?.name || `Player ${id}`;
+            };
+            const revealedCard =
+                targetId !== undefined && cardIndex !== undefined
+                    ? context?.players?.find(p => p.id === targetId)?.holeCards[cardIndex]
+                    : undefined;
+            const cardName = formatCardName(revealedCard);
+
             name = "Reveal Card";
-            description = "Opponent card revealed";
-            typeKey = "reveal_card";
-            imgSrc = getSpecialCardInfo("reveal_opponent_card").imgSrc ?? imgSrc;
+            if (context?.myId != null && viewerId === context.myId) {
+                description = `Revealed ${getPlayerName(targetId)}'s ${cardName}`;
+            } else if (context?.myId != null && targetId === context.myId) {
+                description = `Your ${cardName} was revealed by ${getPlayerName(viewerId)}`;
+            } else if (targetId !== undefined && viewerId !== undefined) {
+                description = `${getPlayerName(targetId)}'s ${cardName} was revealed by ${getPlayerName(viewerId)}`;
+            } else {
+                description = "Opponent card revealed";
+            }
+            typeKey = `reveal_card-${targetId ?? "x"}-${cardIndex ?? "x"}-${viewerId ?? "x"}`;
+            imgSrc = getSpecialCardInfo("reveal_card").imgSrc ?? imgSrc;
         } else if ("loss_insurance" in mod.effect) {
             const rate = mod.effect.loss_insurance?.rebate_rate ?? 0.4;
             const pct = Math.round(rate * 100);
@@ -441,16 +529,22 @@ export function parseModifier(
             const rate = data?.rebate_rate ?? 0.2;
             const accumulated = data?.accumulated_bet ?? 0;
             const pct = Math.round(rate * 100);
-            name = `Bet Rebate`;
+            name = `Bet Rebate (${pct}%)`;
             description = `Refunds ${pct}% of chips spent while this modifier is active on expiry (${accumulated} chips total)`;
             typeKey = "bet_rebate";
             imgSrc = getSpecialCardInfo("bet_rebate").imgSrc ?? imgSrc;
         } else if ("chip_stipend" in mod.effect) {
             const chips = Math.round((blindSize ?? 20) * (anteMult ?? 1));
-            name = "Chip Stipend";
+            name = `Chip Stipend (+${chips} chips)`;
             description = `Grants ${chips} chips at the end of each hand`;
             typeKey = "chip_stipend";
             imgSrc = getSpecialCardInfo("chip_stipend").imgSrc ?? imgSrc;
+        } else if ("extra_slot" in mod.effect) {
+            const extraSlots = mod.effect.extra_slot?.extra_slots ?? 1;
+            name = `Extra Slot (+${extraSlots})`;
+            description = `Increases your special card capacity by ${extraSlots}`;
+            typeKey = "extra_slot";
+            imgSrc = getSpecialCardInfo("extra_slot").imgSrc ?? imgSrc;
         } else if ("invalidate_hand" in mod.effect) {
             const rawHand = mod.effect.invalidate_hand ?? "none";
             const rawHandStr = typeof rawHand === "string" ? rawHand : String(rawHand ?? "none");
@@ -516,6 +610,12 @@ export function parseModifier(
                     name = "Draw Same Suit";
                     description = "Forces the next card draw to have the same suit as the previous draw";
                     typeKey = "draw_same_suit_as_last";
+                    break;
+                case "nothing":
+                    name = "Draw Blank";
+                    description = "Forces the next card draw to be a blank card";
+                    typeKey = "draw_nothing";
+                    imgSrc = getSpecialCardInfo("discard").imgSrc ?? imgSrc;
                     break;
                 default:
                     name = `Draw ${ruleStr}`;
@@ -616,6 +716,8 @@ interface CardFacesProps {
 export const CardFaces: React.FC<CardFacesProps> = ({ card, cardType }) => {
     const cardValue = "value" in card ? card.value : null;
     const playingInfo = cardValue && cardType === "playing" ? parseCardString(cardValue) : null;
+    const specialInfo = cardValue && cardType === "special" ? getSpecialCardInfo(cardValue) : null;
+    const specialSmallMark = cardType === "special" ? getAssetUrl("/src/assets/special/specialsmall.png") : "";
     const isJoker = cardType === "playing" && cardValue && cardValue.startsWith("*");
 
     return (
@@ -636,12 +738,17 @@ export const CardFaces: React.FC<CardFacesProps> = ({ card, cardType }) => {
                 style={cardType === "playing" ? { color: playingInfo?.color } : undefined}
             >
                 {cardType === "special" && (
-                    <div
-                        style={{ display: "contents" }}
-                        dangerouslySetInnerHTML={{
-                            __html: buildSpecialCardFrontHTML(cardValue),
-                        }}
-                    />
+                    <>
+                        <img style={{ top: 1, left: 1 }} className={styles.specialMark} src={specialSmallMark} alt="" draggable={false} />
+                        <img style={{ top: 1, right: 1 }} className={styles.specialMark} src={specialSmallMark} alt="" draggable={false} />
+                        {specialInfo?.imgSrc ? (
+                            <img src={specialInfo.imgSrc} alt={specialInfo.label} className={styles.specialImage} draggable={false} />
+                        ) : (
+                            <span>{specialInfo?.label ?? "Special"}</span>
+                        )}
+                        <img style={{ bottom: 1, left: 1 }} className={styles.specialMark} src={specialSmallMark} alt="" draggable={false} />
+                        <img style={{ bottom: 1, right: 1 }} className={styles.specialMark} src={specialSmallMark} alt="" draggable={false} />
+                    </>
                 )}
 
                 {cardType === "playing" && playingInfo && !isJoker && (

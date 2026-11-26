@@ -147,28 +147,34 @@ class SoundManager {
             const ctx = this.getAudioContext();
             if (!ctx) return;
 
-            const numClacks = Math.max(2, Math.min(30, Math.round(chipCount)));
-            const totalDurationSec = Math.max(0.2, Math.min(2, durationMs / 1000));
-            const intervalSec = totalDurationSec / numClacks;
+            const clackDuration = 0.025;
+            const totalDurationSec = Math.max(0.15, durationMs / 1000);
+            const maxClacksForDuration = Math.max(2, Math.ceil(totalDurationSec * 22));
+            const numClacks = Math.max(1, Math.min(Math.round(chipCount), maxClacksForDuration));
+            const spanSec = Math.max(0, totalDurationSec - clackDuration);
+            const intervalSec = numClacks > 1 ? spanSec / (numClacks - 1) : 0;
 
             const now = ctx.currentTime;
             const chipMult = this.soundVolumeMultipliers.get("chips") ?? 1.0;
 
-            for (let i = 0; i < numClacks; i++) {
-                const time = now + i * intervalSec;
-
-                const baseFreq = 2600 + (Math.random() * 400 - 200);
-                const duration = 0.025;
-
-                const bufferSize = ctx.sampleRate * duration;
+            const poolSize = Math.min(numClacks, 6);
+            const bufferSize = Math.max(1, Math.floor(ctx.sampleRate * clackDuration));
+            const noiseBuffers: AudioBuffer[] = [];
+            for (let b = 0; b < poolSize; b++) {
                 const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
                 const data = buffer.getChannelData(0);
                 for (let j = 0; j < bufferSize; j++) {
                     data[j] = (Math.random() * 2 - 1) * Math.exp(-j / (bufferSize * 0.2));
                 }
+                noiseBuffers.push(buffer);
+            }
+
+            for (let i = 0; i < numClacks; i++) {
+                const time = now + i * intervalSec;
+                const baseFreq = 2600 + (Math.random() * 400 - 200);
 
                 const noiseNode = ctx.createBufferSource();
-                noiseNode.buffer = buffer;
+                noiseNode.buffer = noiseBuffers[i % noiseBuffers.length];
 
                 const filter = ctx.createBiquadFilter();
                 filter.type = "bandpass";
@@ -180,14 +186,14 @@ class SoundManager {
                 if (isNaN(vol) || !isFinite(vol)) continue;
 
                 gainNode.gain.setValueAtTime(vol, time);
-                gainNode.gain.exponentialRampToValueAtTime(0.001, time + duration);
+                gainNode.gain.exponentialRampToValueAtTime(0.001, time + clackDuration);
 
                 noiseNode.connect(filter);
                 filter.connect(gainNode);
                 gainNode.connect(ctx.destination);
 
                 noiseNode.start(time);
-                noiseNode.stop(time + duration);
+                noiseNode.stop(time + clackDuration);
             }
         } catch (e) { }
     }
